@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orchestrator
+  labels:
+    app: orchestrator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orchestrator
+  template:
+    metadata:
+      labels:
+        app: orchestrator
+    spec:
+      # The ServiceAccount requires a ClusterRole to create Pods/Services
+      serviceAccountName: orchestrator-sa
+      containers:
+        - name: orchestrator
+          # This image tag will be overwritten by GitHub Actions during deployment
+          image: RUNNER_IDE_ORCHESTRATOR_IMAGE_PLACEHOLDER
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          env:
+            - name: RUNNER_IMAGE
+              value: "RUNNER_IDE_RUNNER_IMAGE_PLACEHOLDER"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orchestrator-svc
+spec:
+  selector:
+    app: orchestrator
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+---
+# RBAC for the Orchestrator to create Pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orchestrator-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: orchestrator-role
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: orchestrator-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: orchestrator-sa
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: orchestrator-role
+  apiGroup: rbac.authorization.k8s.io

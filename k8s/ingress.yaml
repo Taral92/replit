@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: runner-ingress
+  annotations:
+    # Use nginx or traefik
+    kubernetes.io/ingress.class: nginx
+    # Rewrite target for clean routing
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+spec:
+  rules:
+    # We use a wildcard subdomain so any repl-id routes correctly
+    - host: "*.localhost"
+      http:
+        paths:
+          # In a real environment, we'd dynamically create Ingress rules per user 
+          # or use a default backend that routes based on the Host header.
+          # For local testing, we can define a wildcard path or dynamically create 
+          # Ingress objects in the orchestrator just like we create Services.
+          - path: /?(.*)
+            pathType: Prefix
+            backend:
+              service:
+                name: orchestrator-svc
+                port:
+                  number: 80
