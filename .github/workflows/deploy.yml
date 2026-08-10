@@ -1,0 +1,76 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: runner-ide-cluster
+  ORCHESTRATOR_REPO: runner-ide/orchestrator
+  RUNNER_REPO: runner-ide/runner
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # In a real environment, replace this with your actual OIDC Role ARN
+          role-to-assume: arn:aws:iam::123456789012:role/github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Orchestrator Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd orchestrator
+          docker build -t $ECR_REGISTRY/$ORCHESTRATOR_REPO:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ORCHESTRATOR_REPO:$IMAGE_TAG
+          # Tag as latest as well
+          docker tag $ECR_REGISTRY/$ORCHESTRATOR_REPO:$IMAGE_TAG $ECR_REGISTRY/$ORCHESTRATOR_REPO:latest
+          docker push $ECR_REGISTRY/$ORCHESTRATOR_REPO:latest
+
+      - name: Build and Push Runner Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd runner
+          docker build -t $ECR_REGISTRY/$RUNNER_REPO:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$RUNNER_REPO:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/$RUNNER_REPO:$IMAGE_TAG $ECR_REGISTRY/$RUNNER_REPO:latest
+          docker push $ECR_REGISTRY/$RUNNER_REPO:latest
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Replace placeholders in the Kubernetes manifests with the actual image URIs
+          sed -i "s|RUNNER_IDE_ORCHESTRATOR_IMAGE_PLACEHOLDER|$ECR_REGISTRY/$ORCHESTRATOR_REPO:$IMAGE_TAG|g" k8s/orchestrator.yaml
+          sed -i "s|RUNNER_IDE_RUNNER_IMAGE_PLACEHOLDER|$ECR_REGISTRY/$RUNNER_REPO:latest|g" k8s/orchestrator.yaml
+          
+          # Apply the manifests
+          kubectl apply -f k8s/orchestrator.yaml
+          kubectl apply -f k8s/ingress.yaml
+          
+          # Wait for rollout
+          kubectl rollout status deployment/orchestrator
