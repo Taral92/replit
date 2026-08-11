@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
+import { Terminal } from './components/Terminal';
 
 export default function App() {
   // Grab the replId from the URL or default to test-runner
@@ -7,74 +7,32 @@ export default function App() {
   const replId = params.get('replId') || 'test-runner';
   
   // Connect to the specific pod via Ingress wildcard
-  // Example: http://test-runner.localhost
   const wsUrl = `ws://${replId}.localhost`;
   
-  const { socket, isConnected, send } = useWebSocket(wsUrl);
+  const { socket, isConnected } = useWebSocket(wsUrl);
   
-  const [inputMessage, setInputMessage] = useState('');
-  const [logs, setLogs] = useState<string[]>([]);
-
-  useEffect(() => {
-    if (!socket) return;
-
-    // Listen for the 'echo' event from our Node.js runner
-    socket.on('echo', (data: any) => {
-      setLogs((prev) => [...prev, `[ECHO RECEIVED] ${JSON.stringify(data)}`]);
-    });
-
-    return () => {
-      socket.off('echo');
-    };
-  }, [socket]);
-
-  const handleSend = () => {
-    if (!inputMessage) return;
-    
-    // Log what we sent
-    setLogs((prev) => [...prev, `[SENT] ${inputMessage}`]);
-    
-    // Send arbitrary event 'test-event' with the input payload
-    send('test-event', { message: inputMessage });
-    setInputMessage('');
-  };
-
   return (
-    <div style={{ padding: '20px', maxWidth: '800px', margin: '0 auto' }}>
-      <h1>Workspace Echo Tester</h1>
-      <p>Target Pod: <strong>{replId}</strong></p>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', backgroundColor: '#1e1e1e', color: 'white', fontFamily: 'sans-serif' }}>
+      <header style={{ padding: '10px 20px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <span style={{ fontWeight: 'bold', marginRight: '15px' }}>RunnerIDE</span>
+          <span style={{ fontSize: '0.9em', color: '#888' }}>Workspace: {replId}</span>
+        </div>
+        <div style={{ fontSize: '0.9em', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: isConnected ? '#4caf50' : '#f44336' }} />
+          {isConnected ? 'Connected' : 'Disconnected'}
+        </div>
+      </header>
       
-      <div style={{ marginBottom: '20px', padding: '10px', border: `2px solid ${isConnected ? 'green' : 'red'}` }}>
-        Status: {isConnected ? 'Connected 🟢' : 'Disconnected 🔴'}
-      </div>
-
-      <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
-        <input 
-          type="text" 
-          value={inputMessage} 
-          onChange={(e) => setInputMessage(e.target.value)}
-          placeholder="Type a message to send to the container..."
-          style={{ flexGrow: 1, padding: '10px' }}
-          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-        />
-        <button onClick={handleSend} style={{ padding: '10px 20px', cursor: 'pointer' }}>
-          Send to Pod
-        </button>
-      </div>
-
-      <div style={{ 
-        background: 'black', 
-        color: '#0f0', 
-        padding: '20px', 
-        height: '400px', 
-        overflowY: 'auto',
-        fontFamily: 'monospace' 
-      }}>
-        {logs.map((log, i) => (
-          <div key={i}>{log}</div>
-        ))}
-        {logs.length === 0 && <div>Waiting for messages...</div>}
-      </div>
+      <main style={{ flexGrow: 1, overflow: 'hidden', padding: '10px' }}>
+        {socket && isConnected ? (
+          <Terminal socket={socket} />
+        ) : (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', color: '#888' }}>
+            Connecting to workspace...
+          </div>
+        )}
+      </main>
     </div>
   );
 }
