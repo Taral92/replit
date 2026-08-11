@@ -25,10 +25,10 @@ module "vpc" {
 # 2. EKS Cluster
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 19.0"
+  version = "~> 20.0"
 
   cluster_name    = var.cluster_name
-  cluster_version = "1.28"
+  cluster_version = "1.30"
 
   vpc_id                   = module.vpc.vpc_id
   subnet_ids               = module.vpc.private_subnets
@@ -37,6 +37,13 @@ module "eks" {
   # Public access required for GitHub Actions to deploy
   cluster_endpoint_public_access  = true
 
+  # AL2023 requires the latest VPC CNI and CoreDNS addons to join the cluster
+  cluster_addons = {
+    coredns = { most_recent = true }
+    kube-proxy = { most_recent = true }
+    vpc-cni = { most_recent = true }
+  }
+
   eks_managed_node_groups = {
     default = {
       min_size     = 1
@@ -44,6 +51,7 @@ module "eks" {
       desired_size = 2
 
       instance_types = ["t3.medium"]
+      ami_type       = "AL2023_x86_64_STANDARD"
     }
   }
 }
