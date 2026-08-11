@@ -15,23 +15,28 @@ permissions:
   id-token: write
   contents: read
 
-jobs:
+jobs: 
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Debug OIDC claims
+        uses: github/actions-oidc-debugger@v1
+        with:
+          audience: sts.amazonaws.com
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # In a real environment, replace this with your actual OIDC Role ARN
-          role-to-assume: arn:aws:iam::123456789012:role/github-actions-role
+          # Make sure you created an IAM ROLE (not a user!) for this
+          role-to-assume: arn:aws:iam::873449337587:role/github-actions-deploy-role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@v2 
 
       - name: Build and Push Orchestrator Image
         env:
@@ -74,3 +79,6 @@ jobs:
           
           # Wait for rollout
           kubectl rollout status deployment/orchestrator
+
+
+
