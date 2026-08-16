@@ -1,0 +1,75 @@
+:root {
+  /* ── Surfaces: 5 elevation steps, low contrast between adjacent steps.
+        Codex reads "calm" because adjacent surfaces differ by ~3% luminance,
+        never by a hard border alone. ── */
+  --surface-0:  #0a0a0b;   /* app background */
+  --surface-1:  #101012;   /* panels: sidebar, agent panel */
+  --surface-2:  #161619;   /* raised: tab bar, toolbars, inputs */
+  --surface-3:  #1c1c20;   /* hover states */
+  --surface-4:  #232328;   /* active / selected */
+
+  /* ── Borders: hairlines, never pure grey ── */
+  --border-subtle: #1e1e22;   /* default dividers — barely visible, that's correct */
+  --border-default:#2a2a30;
+  --border-strong: #3a3a42;   /* focus rings, active panel edge */
+
+  /* ── Text: 4 steps, generous contrast on primary ── */
+  --text-primary:  #ededf0;
+  --text-secondary:#a1a1ab;
+  --text-tertiary: #6e6e78;
+  --text-disabled: #4a4a52;
+
+  /* ── Accent: single hue. Resist adding a second. ── */
+  --accent:        #4b8cf5;
+  --accent-hover:  #649bf7;
+  --accent-muted:  rgba(75, 140, 245, 0.14);
+  --accent-border: rgba(75, 140, 245, 0.35);
+
+  /* ── Semantic ── */
+  --success: #2ea043;  --success-muted: rgba(46,160,67,0.14);
+  --warning: #d29922;  --warning-muted: rgba(210,153,34,0.14);
+  --danger:  #e5534b;  --danger-muted:  rgba(229,83,75,0.14);
+
+  /* ── Diff ── */
+  --diff-add-bg:    rgba(46,160,67,0.13);
+  --diff-add-text:  #56d364;
+  --diff-del-bg:    rgba(229,83,75,0.13);
+  --diff-del-text:  #f85149;
+  --diff-gutter:    #17171a;
+
+  /* ── Type: system stack for UI, one mono for code ── */
+  --font-ui:   ui-sans-serif, -apple-system, "Inter", "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-2xs: 10px;  --text-xs: 11px;  --text-sm: 12px;
+  --text-base: 13px; --text-md: 14px;  --text-lg: 16px;
+
+  /* ── Space: 4px base grid. Every margin/padding is a multiple. ── */
+  --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+  --space-4: 16px; --space-5: 20px; --space-6: 24px; --space-8: 32px;
+
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px; --radius-xl: 12px;
+
+  /* ── Elevation: soft, never harsh ── */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.35);
+  --shadow-lg: 0 12px 32px rgba(0,0,0,0.45);
+
+  /* ── Motion: fast is professional. Nothing over 200ms. ── */
+  --ease-out:  cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast:  120ms;
+  --dur-base:  180ms;
+
+  /* ── Fixed chrome dimensions ── */
+  --h-titlebar: 36px;
+  --h-tabbar:   34px;
+  --h-statusbar:24px;
+  --w-activitybar: 44px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

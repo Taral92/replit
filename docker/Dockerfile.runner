@@ -1,0 +1,28 @@
+FROM node:20-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root runner user
+RUN useradd -m -u 1000 runner && \
+    mkdir -p /workspace && \
+    chown -R runner:runner /workspace /app
+
+USER runner
+
+COPY --chown=runner:runner services/runner/package*.json ./
+RUN npm ci --only=production
+
+COPY --chown=runner:runner services/runner/ ./
+RUN npm run build
+
+ENV WORKDIR=/workspace
+EXPOSE 3000
+
+CMD ["node", "dist/index.js"]

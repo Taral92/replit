@@ -15,9 +15,13 @@ env/
 .env
 .venv/
 
-# Project Context & Backups
-*.tar.gz
+# Runtime sandbox data
+workspaces/*
+!workspaces/.gitkeep
+
+# Archives
 *.zip
+*.tar.gz
 
 # OS
 .DS_Store
@@ -28,3 +32,7 @@ Thumbs.db
 *.tfstate
 *.tfstate.backup
 .terraform.tfstate.lock.info
+
+# Build artifacts
+.pytest_cache/
+*.tsbuildinfo
