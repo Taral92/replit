@@ -1,8 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { useAgentStore } from '../store/useAgentStore';
 
 export const useSocketBridge = (socket: Socket | null) => {
+  const isRegistered = useRef(false);
+  
   const { 
     addTurn, 
     appendMessage, 
@@ -13,7 +15,8 @@ export const useSocketBridge = (socket: Socket | null) => {
   } = useAgentStore();
 
   useEffect(() => {
-    if (!socket) return;
+    if (!socket || isRegistered.current) return;
+    isRegistered.current = true;
 
     const onTurnStarted = (data: { turn_id: string; started_at: number; prompt: string }) => {
       addTurn({
@@ -97,13 +100,5 @@ export const useSocketBridge = (socket: Socket | null) => {
     socket.on('agent.tool.completed', onToolCompleted);
     socket.on('agent.turn.completed', onTurnCompleted);
 
-    return () => {
-      socket.off('agent.turn.started', onTurnStarted);
-      socket.off('agent.message', onMessage);
-      socket.off('agent.status', onStatus);
-      socket.off('agent.step', onStep);
-      socket.off('agent.tool.completed', onToolCompleted);
-      socket.off('agent.turn.completed', onTurnCompleted);
-    };
   }, [socket, addTurn, appendMessage, updateStatus, addStep, completeStep, completeTurn]);
 };

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
+import { getSocket } from './lib/socket';
 import { Sidebar } from './components/Sidebar';
 import { Editor } from './components/Editor';
 import { AgentPanel } from './components/agent/AgentPanel';
@@ -29,20 +30,25 @@ const App: React.FC = () => {
   } = useUiStore();
 
   useEffect(() => {
-    // Without the fallback, an unset VITE_API_URL passes undefined and
-    // socket.io silently connects to the page origin (the Vite dev server)
-    // instead of the API.
-    const apiUrl =
-      (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
-    const newSocket = io(apiUrl);
+    // The socket is a module-level singleton (see lib/socket.ts). Creating it
+    // inside this effect caused StrictMode to open two connections, so every
+    // event arrived twice.
+    const s = getSocket();
 
-    newSocket.on('connect', () => setConnected(true));
-    newSocket.on('disconnect', () => setConnected(false));
+    const onConnect = () => setConnected(true);
+    const onDisconnect = () => setConnected(false);
 
-    setSocket(newSocket);
+    s.on('connect', onConnect);
+    s.on('disconnect', onDisconnect);
+    setConnected(s.connected);
+    setSocket(s);
 
     return () => {
-      newSocket.close();
+      // Detach this component's listeners, but leave the shared connection
+      // open — closing it here would tear down the singleton on every
+      // StrictMode remount.
+      s.off('connect', onConnect);
+      s.off('disconnect', onDisconnect);
     };
   }, []);
 

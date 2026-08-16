@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -50,6 +51,7 @@ class ToolGateway:
         self.approval_callback: Optional[Callable[[str, RiskLevel, str], bool]] = None
         self.event_callback: Optional[Callable[[Dict[str, Any]], Any]] = None
         self.turn_diffs: Dict[str, Dict[str, Any]] = {}
+        self.turn_tool_calls: Dict[str, int] = {}
 
     def set_approval_callback(self, callback: Callable[[str, RiskLevel, str], bool]):
         self.approval_callback = callback
@@ -60,6 +62,7 @@ class ToolGateway:
     def reset_turn_diffs(self):
         """Resets the accumulated diffs for a new turn."""
         self.turn_diffs.clear()
+        self.turn_tool_calls.clear()
 
     def get_turn_diff_data(self) -> Dict[str, Any]:
         """Returns aggregated diff text, modified files, and line counts for this turn."""
@@ -106,6 +109,26 @@ class ToolGateway:
             "tool_name": tool_name,
             "arguments": kwargs,
         })
+
+        # B4: Repeated Identical Commands check
+        try:
+            call_sig = f"{tool_name}:{json.dumps(kwargs, sort_keys=True)}"
+        except Exception:
+            call_sig = f"{tool_name}:{str(kwargs)}"
+
+        self.turn_tool_calls[call_sig] = self.turn_tool_calls.get(call_sig, 0) + 1
+        if self.turn_tool_calls[call_sig] >= 3:
+            err_dict = {
+                "success": False, 
+                "error": "Error: You have already executed this exact tool with these exact arguments multiple times this turn. Do not repeat this call. Please review the result from the previous execution and try a different approach."
+            }
+            await self._emit_event({
+                "type": "agent.tool.completed",
+                "tool_name": tool_name,
+                "arguments": kwargs,
+                "result": err_dict,
+            })
+            return err_dict
 
         # 1. Policy Assessment
         risk_level: RiskLevel = "safe"

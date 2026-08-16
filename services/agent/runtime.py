@@ -17,7 +17,7 @@ from packages.protocol.events import (
     AgentToolFailedEvent,
     AgentToolStartedEvent,
 )
-from services.agent.context import SYSTEM_INSTRUCTIONS
+from services.agent.context import SYSTEM_INSTRUCTIONS, ContextManager
 from services.agent.gateway.tool_gateway import ToolGateway
 from services.agent.router import ModelRouter
 from services.agent.tools import create_agent_tools
@@ -115,6 +115,7 @@ class AgentRuntime:
             model=llm,
             tools=self.tools,
             checkpointer=self.checkpointer,
+            prompt=ContextManager.prune_messages,
         )
         self.graphs[model_name] = graph
         return graph
@@ -249,6 +250,7 @@ class AgentRuntime:
         max_retries = 2
         latest_agent_text = ""
         tool_call_args: Dict[str, Dict[str, Any]] = {}
+        tool_call_count = 0
 
         try:
             while retry_count <= max_retries:
@@ -260,20 +262,11 @@ class AgentRuntime:
                             if isinstance(msg, AIMessage) or msg.__class__.__name__ == "AIMessage":
                                 if getattr(msg, "tool_calls", None):
                                     for tc in msg.tool_calls:
+                                        tool_call_count += 1
                                         call_id = tc.get("id") or str(uuid4())
                                         tool_name = tc.get("name", "tool")
                                         args = tc.get("args", {})
                                         tool_call_args[call_id] = {"tool": tool_name, "args": args}
-
-                                        t_ev = AgentToolStartedEvent(
-                                            workspace_id=self.gateway.workspace_id,
-                                            session_id=session_id,
-                                            tool_name=tool_name,
-                                            arguments=args,
-                                        ).model_dump()
-                                        if event_callback:
-                                            await event_callback(t_ev)
-                                        yield t_ev
 
                                 if msg.content:
                                     content_str = str(msg.content).strip()
@@ -289,32 +282,21 @@ class AgentRuntime:
                                 args = call_info.get("args", {})
                                 file_path = args.get("path") or args.get("file_path") or args.get("target")
 
-                                # Extract unified diff if present
-                                diff_part = ""
-                                if "DIFF_START" in content and "DIFF_END" in content:
-                                    diff_match = re.search(r"DIFF_START\s*\n(.*?)\nDIFF_END", content, re.DOTALL)
-                                    if diff_match:
-                                        diff_part = diff_match.group(1).strip()
-                                elif "+++" in content or "---" in content:
-                                    diff_part = content
+                                pass
 
-                                added = sum(1 for line in diff_part.splitlines() if line.startswith("+") and not line.startswith("+++"))
-                                removed = sum(1 for line in diff_part.splitlines() if line.startswith("-") and not line.startswith("---"))
+                    if tool_call_count >= 40:
+                        msg_ev = AgentMessageEvent(
+                            workspace_id=self.gateway.workspace_id,
+                            session_id=session_id,
+                            content="⚠️ **Iteration Cap Reached**: The agent hit the hard limit of 40 tool calls per turn. I have stopped cleanly. Please review what was completed and ask me to continue if more work remains.",
+                        ).model_dump()
+                        if event_callback:
+                            await event_callback(msg_ev)
+                        yield msg_ev
+                        break
 
-                                completed_payload = {
-                                    "type": "agent.tool.completed",
-                                    "tool_name": tool_name,
-                                    "arguments": args,
-                                    "result": {
-                                        "path": file_path,
-                                        "diff": diff_part,
-                                        "added": added,
-                                        "removed": removed,
-                                        "success": "error" not in content.lower(),
-                                    },
-                                }
-                                if event_callback:
-                                    await event_callback(completed_payload)
+                if tool_call_count >= 40:
+                    break
 
                 # Collect Real Unified Diffs directly from ToolGateway
                 diff_data = self.gateway.get_turn_diff_data()

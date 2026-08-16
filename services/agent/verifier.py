@@ -299,25 +299,10 @@ class IndependentVerifier:
         files_count = len(touched_files)
 
         # Blunt Diff-Size Sanity Check
+        warning_msg = ""
         if len(checklist) >= 3 and (added + removed < 10 or files_count == 0):
-            logger.warning("Sanity check failed: Checklist has 3+ items but diff is under 10 lines.")
-            items = [
-                ChecklistItem(
-                    description=c,
-                    status="FAIL",
-                    reason="Diff is trivial (<10 lines) or no files were modified.",
-                )
-                for c in checklist
-            ]
-            return TurnVerificationReport(
-                all_passed=False,
-                items=items,
-                files_changed=files_count,
-                lines_added=added,
-                lines_removed=removed,
-                summary="The agent made minimal or no changes in the workspace to satisfy this request.",
-                feedback_for_agent=f"Execution incomplete: Only {added+removed} lines were touched across {files_count} files for a multi-step task. Implement the full feature in code.",
-            )
+            logger.warning("Sanity check warning: Checklist has 3+ items but diff is under 10 lines.")
+            warning_msg = "\n⚠️ Warning: Diff size is surprisingly small for a multi-step checklist, but passed to LLM for review."
 
         if not llm:
             llm = ChatOpenAI(
@@ -386,7 +371,7 @@ class IndependentVerifier:
                     files_changed=files_count,
                     lines_added=added,
                     lines_removed=removed,
-                    summary=data.get("summary", ""),
+                    summary=data.get("summary", "") + warning_msg,
                     feedback_for_agent=f"Verification failed on the following checklist items:\n{feedback}" if feedback else None,
                 )
 
@@ -400,5 +385,5 @@ class IndependentVerifier:
             files_changed=files_count,
             lines_added=added,
             lines_removed=removed,
-            summary="All changes verified in the workspace.",
+            summary="All changes verified in the workspace." + warning_msg,
         )

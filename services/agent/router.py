@@ -100,7 +100,8 @@ class ModelRouter:
                 return "gpt-4o", "Manual Selection (GPT-4o — Anthropic unavailable)"
             elif "4o" in clean_model:
                 return "gpt-4o", "Manual Selection (GPT-4o)"
-            return requested_model, "Manual Selection"
+            
+            return settings.DEFAULT_AGENT_MODEL, f"Manual Selection (Fallback: '{requested_model}' is unsupported/deprecated)"
 
         # 2. Conversational greetings
         if cls.is_conversational_query(trimmed):
