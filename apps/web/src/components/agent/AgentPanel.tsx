@@ -55,9 +55,8 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({ socket }) => {
   };
 
   const handleStop = () => {
-    if (!socket) return;
-    // In a real implementation this would emit a stop event
-    // socket.emit('agent.stop', { turn_id: activeTurnId });
+    if (!socket || !activeTurnId) return;
+    socket.emit('agent.stop', { turn_id: activeTurnId });
   };
 
   return (

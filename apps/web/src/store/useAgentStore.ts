@@ -103,7 +103,7 @@ export const useAgentStore = create<AgentState>((set) => ({
 
   completeTurn: (turnId, data) => set((state) => ({
     turns: state.turns.map(t => 
-      t.id === turnId ? { ...t, ...data, activeTurnId: null } : t
+      t.id === turnId ? { ...t, ...data } : t
     ),
     activeTurnId: state.activeTurnId === turnId ? null : state.activeTurnId
   })),

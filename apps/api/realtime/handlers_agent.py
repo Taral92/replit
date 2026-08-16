@@ -1,18 +1,39 @@
-"""Agent chat socket handler — agent.start and all turn events."""
+"""Agent chat socket handler — agent.start, agent.stop, and all turn events."""
+import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, Dict
 from uuid import uuid4
 
 from apps.api.realtime.socket_server import sio
 
 logger = logging.getLogger("RunnerIDE-Agent")
 
+# Tracks the in-flight agent task per socket so agent.stop can cancel it.
+# One run per socket at a time — starting a new turn supersedes the old one.
+_running_turns: Dict[str, asyncio.Task] = {}
+
+
+@sio.on("agent.stop")
+async def handle_agent_stop(sid, data: Any = None):
+    """Cancel the in-flight agent run for this socket, if any."""
+    task = _running_turns.get(sid)
+    if task is None or task.done():
+        return
+    task.cancel()
+
 
 @sio.on("agent.start")
 async def handle_agent_start(sid, data: Any):
     from apps.api.main import get_or_create_session
     ctx = get_or_create_session(session_id=sid)
+
+    # A new turn supersedes any run still in flight for this socket.
+    previous = _running_turns.get(sid)
+    if previous is not None and not previous.done():
+        previous.cancel()
+
+    _running_turns[sid] = asyncio.current_task()
 
     if isinstance(data, dict):
         prompt = data.get("prompt", "")
@@ -120,6 +141,29 @@ async def handle_agent_start(sid, data: Any):
         )
         await sio.emit("agent.status", {"turn_id": turn_id, "status": "Idle"}, room=sid)
 
+    except asyncio.CancelledError:
+        # User pressed stop. Close the turn cleanly so the UI leaves the
+        # streaming state, then re-raise so asyncio unwinds properly.
+        ended_at = int(time.time() * 1000)
+        await sio.emit(
+            "agent.turn.completed",
+            {
+                "turn_id": turn_id,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_ms": ended_at - started_at,
+                "cancelled": True,
+            },
+            room=sid,
+        )
+        await sio.emit(
+            "agent.message",
+            {"turn_id": turn_id, "content": "Stopped by user."},
+            room=sid,
+        )
+        await sio.emit("agent.status", {"turn_id": turn_id, "status": "Idle"}, room=sid)
+        raise
+
     except Exception as e:
         logger.exception(f"Error in agent.start: {e}")
         ended_at = int(time.time() * 1000)
@@ -134,3 +178,7 @@ async def handle_agent_start(sid, data: Any):
             room=sid,
         )
         await sio.emit("agent.status", {"turn_id": turn_id, "status": "Idle"}, room=sid)
+
+    finally:
+        if _running_turns.get(sid) is asyncio.current_task():
+            _running_turns.pop(sid, None)
