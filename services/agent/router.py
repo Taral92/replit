@@ -36,6 +36,28 @@ class ModelRouter:
     Distinguishes casual conversational queries from active engineering tasks.
     """
 
+    # Set when a provider returns an authentication error. A configured-but-
+    # invalid key would otherwise route every request to a provider that can
+    # only 401, while a working provider sits unused.
+    _anthropic_disabled: bool = False
+    _anthropic_disabled_reason: str = ""
+
+    @classmethod
+    def disable_anthropic(cls, reason: str = "authentication failed") -> None:
+        """Mark Anthropic unusable for the rest of this process."""
+        if not cls._anthropic_disabled:
+            print(
+                f"[Model Router] Anthropic disabled ({reason}). "
+                f"Falling back to {settings.DEFAULT_AGENT_MODEL} for all routes."
+            )
+        cls._anthropic_disabled = True
+        cls._anthropic_disabled_reason = reason
+
+    @classmethod
+    def anthropic_available(cls) -> bool:
+        """True only if a key is configured AND it has not already failed auth."""
+        return bool(settings.ANTHROPIC_API_KEY) and not cls._anthropic_disabled
+
     @classmethod
     def is_conversational_query(cls, prompt: str) -> bool:
         """
@@ -73,9 +95,9 @@ class ModelRouter:
             elif "o3" in clean_model:
                 return "o3-mini", "Manual Selection (Deep Reasoning)"
             elif "sonnet" in clean_model or "claude" in clean_model:
-                if settings.ANTHROPIC_API_KEY:
-                    return settings.ANTHROPIC_MODEL, "Manual Selection (Claude 3.5 Sonnet)"
-                return "gpt-4o", "Manual Selection (GPT-4o)"
+                if cls.anthropic_available():
+                    return settings.ANTHROPIC_MODEL, f"Manual Selection ({settings.ANTHROPIC_MODEL})"
+                return "gpt-4o", "Manual Selection (GPT-4o — Anthropic unavailable)"
             elif "4o" in clean_model:
                 return "gpt-4o", "Manual Selection (GPT-4o)"
             return requested_model, "Manual Selection"
@@ -92,7 +114,13 @@ class ModelRouter:
             return "gpt-4o", "🧠 Auto Router: Routed to High-Precision Model (Error Debugging)"
 
         # 4. Standard Feature Coding & Implementation
-        if settings.ANTHROPIC_API_KEY:
-            return settings.ANTHROPIC_MODEL, "🏆 Auto Router: Routed to Claude 3.5 Sonnet (Feature Coding)"
+        if cls.anthropic_available():
+            return (
+                settings.ANTHROPIC_MODEL,
+                f"🏆 Auto Router: Routed to {settings.ANTHROPIC_MODEL} (Feature Coding)",
+            )
 
-        return settings.DEFAULT_AGENT_MODEL, "⚡ Auto Router: Routed to GPT-4o (Feature Coding)"
+        return (
+            settings.DEFAULT_AGENT_MODEL,
+            f"⚡ Auto Router: Routed to {settings.DEFAULT_AGENT_MODEL} (Feature Coding)",
+        )

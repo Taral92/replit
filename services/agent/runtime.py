@@ -24,6 +24,24 @@ from services.agent.tools import create_agent_tools
 from services.agent.verifier import IndependentVerifier, TurnVerificationReport
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    """
+    True if an exception is a provider authentication failure.
+
+    Matches on the message rather than the exception class so it works across
+    openai, anthropic, and langchain wrapper types without importing them.
+    """
+    text = str(exc).lower()
+    return (
+        "authentication_error" in text
+        or "invalid api key" in text
+        or "api key is invalid" in text
+        or "incorrect api key" in text
+        or "error code: 401" in text
+        or "status code: 401" in text
+    )
+
+
 def strip_redundant_code_blocks(text: str) -> str:
     """Removes large redundant fenced code blocks from agent prose when diff cards already show the code."""
     code_blocks = re.findall(r"```[\w]*\n[\s\S]*?\n```", text)
@@ -61,7 +79,7 @@ class AgentRuntime:
 
         # Check for Anthropic Claude
         if "claude" in model_name:
-            if not settings.ANTHROPIC_API_KEY:
+            if not ModelRouter.anthropic_available():
                 print(f"[Model Runtime] ⚠️ ANTHROPIC_API_KEY not found. Falling back to {settings.DEFAULT_AGENT_MODEL}")
                 llm = ChatOpenAI(
                     model=settings.DEFAULT_AGENT_MODEL,
@@ -388,6 +406,35 @@ class AgentRuntime:
             yield final_status
 
         except Exception as e:
+            # A provider auth failure is a configuration problem, not a task
+            # failure. Disable the dead provider and retry once on the other
+            # one rather than burning the user's turn.
+            if _is_auth_error(e) and "claude" in resolved_model:
+                ModelRouter.disable_anthropic("API key rejected (401)")
+                self.graphs.pop(resolved_model, None)
+
+                notice = AgentMessageEvent(
+                    workspace_id=self.gateway.workspace_id,
+                    session_id=session_id,
+                    content=(
+                        f"Anthropic rejected the configured API key. "
+                        f"Retrying on {settings.DEFAULT_AGENT_MODEL}."
+                    ),
+                    role="system",
+                ).model_dump()
+                if event_callback:
+                    await event_callback(notice)
+                yield notice
+
+                async for ev in self.run_stream(
+                    prompt,
+                    session_id=session_id,
+                    requested_model=settings.DEFAULT_AGENT_MODEL,
+                    event_callback=event_callback,
+                ):
+                    yield ev
+                return
+
             err_msg = AgentMessageEvent(
                 workspace_id=self.gateway.workspace_id,
                 session_id=session_id,

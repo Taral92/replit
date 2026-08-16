@@ -25,11 +25,17 @@ class Settings(BaseModel):
     )
 
     # Security & CORS
+    # 5174/5175 are Vite's fallback ports when 5173 is occupied. Allowed so a
+    # port collision degrades to a warning rather than a wall of CORS errors.
     CORS_ORIGINS: List[str] = Field(
         default_factory=lambda: [
             "http://localhost:5173",
+            "http://localhost:5174",
+            "http://localhost:5175",
             "http://localhost:3000",
             "http://127.0.0.1:5173",
+            "http://127.0.0.1:5174",
+            "http://127.0.0.1:5175",
             "http://127.0.0.1:3000",
         ]
     )
@@ -53,7 +59,12 @@ class Settings(BaseModel):
     AWS_REGION: str = Field(default=os.getenv("AWS_REGION", "us-east-1"))
 
     # System & Host Ports (Excluded from workspace preview)
-    SYSTEM_PORTS: List[str] = Field(default_factory=lambda: ["8000", "5173", "5000", "7000"])
+    # Ports belonging to RunnerIDE itself. Excluded from dev-server port
+    # probing so the Preview pane never offers the IDE's own UI as the
+    # user's running app.
+    SYSTEM_PORTS: List[str] = Field(
+        default_factory=lambda: ["8000", "5173", "5174", "5175", "5000", "7000"]
+    )
 
     def get_workspace_dir_for_session(self, session_id: Optional[str] = None, workspace_id: Optional[str] = None) -> Path:
         """

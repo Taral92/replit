@@ -29,7 +29,12 @@ const App: React.FC = () => {
   } = useUiStore();
 
   useEffect(() => {
-    const newSocket = io((import.meta as any).env.VITE_API_URL as string);
+    // Without the fallback, an unset VITE_API_URL passes undefined and
+    // socket.io silently connects to the page origin (the Vite dev server)
+    // instead of the API.
+    const apiUrl =
+      (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
+    const newSocket = io(apiUrl);
 
     newSocket.on('connect', () => setConnected(true));
     newSocket.on('disconnect', () => setConnected(false));

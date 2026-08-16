@@ -3,9 +3,10 @@ import asyncio
 import logging
 import os
 import sys
+import socketio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Ensure project root is in sys.path
 root_dir = Path(__file__).resolve().parent.parent.parent
@@ -47,6 +48,9 @@ class SessionContext:
                 await sio.emit("preview.ready", port, room=self.session_id)
                 await sio.emit("ports.update", list(self.active_ports), room=self.session_id)
 
+        async def on_status(status_dict: Dict[str, Any]):
+            await sio.emit("server.status", status_dict, room=self.session_id)
+
         async def on_terminal_output(text: str):
             await sio.emit("terminal.output", text, room=self.session_id)
 
@@ -54,6 +58,7 @@ class SessionContext:
             self.workspace_dir,
             session_id=session_id,
             on_port_detected=on_port,
+            on_status_change=on_status,
             on_terminal_output=on_terminal_output,
         )
         self.gateway = ToolGateway(self.sandbox, session_id=session_id, workspace_id=workspace_id)
@@ -100,8 +105,8 @@ app.include_router(files_router)
 app.include_router(workspace_router)
 app.add_api_route("/v1/health", health_check, methods=["GET"], tags=["health"])
 
-# Socket.IO mount
-app.mount("/socket.io", sio_app)
+# Wrap FastAPI app with Socket.IO to prevent double CORS headers
+app = socketio.ASGIApp(sio, other_asgi_app=app)
 
 
 # --- Connect handler ---

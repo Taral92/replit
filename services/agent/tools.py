@@ -107,11 +107,11 @@ def create_agent_tools(gateway: ToolGateway):
         return "\n".join(lines)
 
     @tool
-    async def start_dev_server(command: str = "npm run dev", port: int = 3000) -> str:
+    async def start_dev_server(command: str = "npm run dev", port: int = 3000, cwd: Optional[str] = None) -> str:
         """Start the single-owner development server and await verified HTTP readiness."""
         sandbox = getattr(gateway, "sandbox", None)
         if sandbox and hasattr(sandbox, "server_manager"):
-            res = await sandbox.server_manager.start(command=command, target_port=port)
+            res = await sandbox.server_manager.start(command=command, target_port=port, cwd=cwd)
             if res.get("success"):
                 return f"✅ Dev server is healthy and running on {res.get('url')} (PID {res.get('pid')})."
             return f"❌ Failed to start dev server: {res.get('message')}\nError/Logs:\n{res.get('error')}"

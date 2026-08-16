@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from services.agent.gateway.policy import PolicyEngine
+
 logger = logging.getLogger("RunnerIDE-DevServer")
 
 
@@ -33,10 +35,12 @@ class DevServerManager:
         workspace_dir: Path,
         session_id: str = "default",
         on_status_change: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        on_port_detected: Optional[Callable[[str], Any]] = None,
     ):
         self.workspace_dir = workspace_dir.resolve()
         self.session_id = session_id
         self.on_status_change = on_status_change
+        self.on_port_detected = on_port_detected
 
         self.state: str = "stopped"  # 'stopped' | 'starting' | 'running' | 'crashed'
         self.command: Optional[str] = None
@@ -88,13 +92,10 @@ class DevServerManager:
     async def _emit_status(self):
         payload = self.get_status()
         if self.on_status_change:
-            try:
-                if asyncio.iscoroutinefunction(self.on_status_change):
-                    await self.on_status_change(payload)
-                else:
-                    self.on_status_change(payload)
-            except Exception as e:
-                logger.error(f"Error in on_status_change: {e}")
+            if asyncio.iscoroutinefunction(self.on_status_change):
+                await self.on_status_change(payload)
+            else:
+                self.on_status_change(payload)
 
     def get_status(self) -> Dict[str, Any]:
         """Returns the single-owner server status with exact currently alive ports mirror."""
@@ -155,11 +156,46 @@ class DevServerManager:
         except Exception as e:
             logger.error(f"Error cleaning lockfiles: {e}")
 
-    async def start(self, command: str = "npm run dev", target_port: int = 3000) -> Dict[str, Any]:
+    async def start(self, command: str = "npm run dev", target_port: int = 3000, cwd: Optional[str] = None) -> Dict[str, Any]:
         """
         Starts the dev server. Idempotent: returns current state if already starting or running.
         Eliminates lock conflicts, kills rogue daemons, and cleans .next/dev state.
         """
+        target_cwd = self.workspace_dir
+        if cwd:
+            valid, p, err = PolicyEngine.resolve_and_validate_path(self.workspace_dir, cwd)
+            if not valid or not p:
+                return {
+                    "success": False,
+                    "message": f"Invalid cwd: {err}",
+                    **self.get_status(),
+                }
+            target_cwd = p
+        else:
+            if not (self.workspace_dir / "package.json").exists():
+                subdirs_with_pkg = []
+                try:
+                    for entry in self.workspace_dir.iterdir():
+                        if entry.is_dir() and (entry / "package.json").exists():
+                            subdirs_with_pkg.append(entry)
+                except Exception:
+                    pass
+
+                if len(subdirs_with_pkg) == 1:
+                    target_cwd = subdirs_with_pkg[0]
+                    logger.info(f"Auto-detected cwd with package.json: {target_cwd.name}")
+                elif len(subdirs_with_pkg) > 1:
+                    return {
+                        "success": False,
+                        "message": "Multiple subdirectories contain package.json. Please specify a 'cwd' explicitly.",
+                        **self.get_status(),
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": "No package.json found in workspace root or immediate subdirectories. Please specify a 'cwd'.",
+                        **self.get_status(),
+                    }
         if self.state in ["starting", "running"] and self.proc and self.proc.returncode is None:
             logger.info(f"Dev server already in state '{self.state}'. Returning existing status.")
             return {
@@ -185,13 +221,13 @@ class DevServerManager:
         await self._emit_status()
 
         env = self._get_enhanced_env()
-        args = shlex.split(command)
 
         try:
-            self.proc = await asyncio.create_subprocess_exec(
-                *args,
-                cwd=str(self.workspace_dir),
+            self.proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(target_cwd),
                 env=env,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 preexec_fn=os.setsid if hasattr(os, "setsid") else None,
@@ -268,7 +304,13 @@ class DevServerManager:
                 if match:
                     found_port = int(match.group(1))
                     if found_port not in [5173, 8000, 5000, 7000]:
-                        self.detected_port = found_port
+                        if self.detected_port != found_port:
+                            self.detected_port = found_port
+                            if self.on_port_detected:
+                                if asyncio.iscoroutinefunction(self.on_port_detected):
+                                    asyncio.create_task(self.on_port_detected(str(found_port)))
+                                else:
+                                    self.on_port_detected(str(found_port))
 
         except asyncio.CancelledError:
             pass
@@ -281,7 +323,8 @@ class DevServerManager:
 
         while time.time() - start < timeout_seconds:
             if self.proc and self.proc.returncode is not None:
-                logger.warning(f"Dev server process exited early with code {self.proc.returncode}")
+                err_out = "\n".join(list(self.logs)[-25:])
+                logger.warning(f"Dev server process exited early with code {self.proc.returncode}. Output:\n{err_out}")
                 return False
 
             candidate_ports = [self.detected_port] if self.detected_port else [self.port, 3000, 3001]
@@ -316,9 +359,10 @@ class DevServerManager:
         try:
             while self.state == "running" and self.proc:
                 if self.proc.returncode is not None:
-                    logger.warning(f"Dev server crashed unexpectedly (Exit Code {self.proc.returncode})")
+                    err_out = "\n".join(list(self.logs)[-25:])
+                    logger.warning(f"Dev server crashed unexpectedly (Exit Code {self.proc.returncode}). Output:\n{err_out}")
                     self.state = "crashed"
-                    self.error = "\n".join(list(self.logs)[-25:]) or "Dev server exited unexpectedly."
+                    self.error = err_out or "Dev server exited unexpectedly."
                     await self._emit_status()
                     break
                 await asyncio.sleep(1.5)

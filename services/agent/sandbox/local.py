@@ -38,6 +38,7 @@ class LocalSandbox(Sandbox):
         workspace_dir: Path,
         session_id: str = "default",
         on_port_detected: Optional[Callable[[str], Any]] = None,
+        on_status_change: Optional[Callable[[Dict[str, Any]], Any]] = None,
         on_terminal_output: Optional[Callable[[str], Any]] = None,
     ):
         self.workspace_dir = workspace_dir.resolve()
@@ -52,7 +53,8 @@ class LocalSandbox(Sandbox):
         self.server_manager = DevServerManager(
             self.workspace_dir,
             session_id=session_id,
-            on_status_change=on_port_detected
+            on_status_change=on_status_change,
+            on_port_detected=on_port_detected
         )
 
     def _get_utc_now(self) -> str:
