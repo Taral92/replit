@@ -1,8 +1,10 @@
-@import "tailwindcss/base";
-@import "tailwindcss/components";
-@import "tailwindcss/utilities";
-
+/* theme.css must come first: it defines the CSS custom properties that
+   the Tailwind semantic classes below resolve against. */
 @import "./theme.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @keyframes fadeSlideUp {
   from {
@@ -43,9 +45,9 @@ html, body, #root {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #27272a;
+  background: var(--border-default);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
+  background: var(--border-strong);
 }
