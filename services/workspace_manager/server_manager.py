@@ -238,8 +238,8 @@ class DevServerManager:
             # Start reading stdout/stderr stream into ring buffer
             self._reader_task = asyncio.create_task(self._log_reader())
 
-            # Real HTTP Readiness Polling (up to 15 seconds)
-            ready = await self._poll_health_check(timeout_seconds=15.0)
+            # Real HTTP Readiness Polling (up to 30 seconds)
+            ready = await self._poll_health_check(timeout_seconds=30.0)
 
             if ready:
                 self.state = "running"

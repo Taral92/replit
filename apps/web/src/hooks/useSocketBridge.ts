@@ -100,5 +100,14 @@ export const useSocketBridge = (socket: Socket | null) => {
     socket.on('agent.tool.completed', onToolCompleted);
     socket.on('agent.turn.completed', onTurnCompleted);
 
+    return () => {
+      socket.off('agent.turn.started', onTurnStarted);
+      socket.off('agent.message', onMessage);
+      socket.off('agent.status', onStatus);
+      socket.off('agent.step', onStep);
+      socket.off('agent.tool.completed', onToolCompleted);
+      socket.off('agent.turn.completed', onTurnCompleted);
+      isRegistered.current = false;
+    };
   }, [socket, addTurn, appendMessage, updateStatus, addStep, completeStep, completeTurn]);
 };
