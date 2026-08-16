@@ -1,27 +1,25 @@
 import React, { useEffect, useState, useRef } from 'react';
 import MonacoEditor from '@monaco-editor/react';
-import { FileCode, Save, X, ChevronRight, Copy, Check } from 'lucide-react';
+import { FileCode, X, Copy, Check } from 'lucide-react';
 import { Socket } from 'socket.io-client';
 import { getFileContent, saveFile } from '../lib/api';
 
 interface EditorProps {
   selectedFile: string | null;
-  openFiles?: string[];
-  onTabSelect?: (file: string) => void;
-  onTabClose?: (file: string) => void;
+  openFiles: string[];
+  onTabSelect: (path: string) => void;
+  onTabClose: (path: string) => void;
   socket: Socket | null;
 }
 
 export const Editor: React.FC<EditorProps> = ({ 
   selectedFile, 
-  openFiles = [], 
+  openFiles, 
   onTabSelect, 
-  onTabClose, 
-  socket 
+  onTabClose
 }) => {
   const [content, setContent] = useState<string>('');
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -54,13 +52,10 @@ export const Editor: React.FC<EditorProps> = ({
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
     autoSaveTimerRef.current = setTimeout(async () => {
       try {
-        setSaving(true);
         await saveFile(selectedFile, newContent);
         setUnsavedChanges(false);
-        setSaving(false);
       } catch (err) {
         console.error("Auto-save failed:", err);
-        setSaving(false);
       }
     }, 1200);
   };

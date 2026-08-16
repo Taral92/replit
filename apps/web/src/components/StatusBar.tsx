@@ -4,14 +4,12 @@ import { GitBranch, RefreshCw, XCircle, AlertTriangle, Radio, Settings } from 'l
 interface StatusBarProps {
   cursorPos?: { line: number; col: number };
   language?: string;
-  selectedFile?: string | null;
   activePort?: string;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
   cursorPos = { line: 1, col: 1 },
   language = 'TypeScript React',
-  selectedFile,
   activePort = '3000',
 }) => {
   return (

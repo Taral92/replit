@@ -3,7 +3,7 @@
  * Base URL comes from VITE_API_URL. No hardcoded localhost anywhere.
  */
 
-const BASE = import.meta.env.VITE_API_URL as string;
+const BASE = (import.meta as any).env.VITE_API_URL || 'http://localhost:8000';
 
 function url(path: string): string {
   return `${BASE}${path}`;

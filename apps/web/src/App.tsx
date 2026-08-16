@@ -2,25 +2,34 @@ import React, { useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { Sidebar } from './components/Sidebar';
 import { Editor } from './components/Editor';
-import { AiPanel } from './components/AiPanel';
+import { AgentPanel } from './components/agent/AgentPanel';
 import { Preview } from './components/Preview';
 import { Terminal } from './components/Terminal';
 import { Panel, PanelGroup } from 'react-resizable-panels';
 import { ResizeHandle } from './components/ResizeHandle';
 import { Columns, Terminal as TerminalIcon, Code2, Globe } from 'lucide-react';
 import { tokens } from './styles/tokens';
+import { useSocketBridge } from './hooks/useSocketBridge';
+import { useUiStore } from './store/useUiStore';
 
 const App: React.FC = () => {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [openFiles, setOpenFiles] = useState<string[]>([]);
-  const [showTerminal, setShowTerminal] = useState(true);
-  const [showSidebar, setShowSidebar] = useState(true);
-  const [showPreview, setShowPreview] = useState(true);
+  
+  // Connect socket events to Zustand store
+  useSocketBridge(socket);
+  
+  const { 
+    showTerminal, showSidebar, showPreview, showAgentPanel,
+    sidebarSize, terminalSize, agentPanelSize, previewSize,
+    toggleTerminal, toggleSidebar, togglePreview,
+    setSidebarSize, setTerminalSize, setAgentPanelSize, setPreviewSize
+  } = useUiStore();
 
   useEffect(() => {
-    const newSocket = io(import.meta.env.VITE_API_URL as string);
+    const newSocket = io((import.meta as any).env.VITE_API_URL as string);
 
     newSocket.on('connect', () => setConnected(true));
     newSocket.on('disconnect', () => setConnected(false));
@@ -92,7 +101,7 @@ const App: React.FC = () => {
           
           {/* Live Preview Toggle Pill */}
           <button
-            onClick={() => setShowPreview(!showPreview)}
+            onClick={togglePreview}
             title={showPreview ? "Hide Live Preview (Full Editor Focus)" : "Show Live Preview"}
             style={{
               display: 'flex',
@@ -115,7 +124,7 @@ const App: React.FC = () => {
 
           {/* Toggle Explorer */}
           <button 
-            onClick={() => setShowSidebar(!showSidebar)}
+            onClick={toggleSidebar}
             title="Toggle Explorer"
             style={{ 
               background: 'none', 
@@ -130,7 +139,7 @@ const App: React.FC = () => {
           
           {/* Toggle Terminal */}
           <button 
-            onClick={() => setShowTerminal(!showTerminal)}
+            onClick={toggleTerminal}
             title="Toggle Terminal"
             style={{ 
               background: 'none', 
@@ -152,7 +161,13 @@ const App: React.FC = () => {
           {/* 1. Left Explorer Sidebar */}
           {showSidebar && (
             <>
-              <Panel defaultSize={18} minSize={12} maxSize={30} style={{ backgroundColor: tokens.colors.surface2, display: 'flex', flexDirection: 'column' }}>
+              <Panel 
+                defaultSize={sidebarSize} 
+                onResize={setSidebarSize}
+                minSize={12} 
+                maxSize={30} 
+                style={{ backgroundColor: tokens.colors.surface2, display: 'flex', flexDirection: 'column' }}
+              >
                 <Sidebar 
                   onFileSelect={handleFileSelect} 
                   selectedFile={selectedFile} 
@@ -172,7 +187,11 @@ const App: React.FC = () => {
                 <PanelGroup direction="horizontal">
                   
                   {/* Monaco Code Editor */}
-                  <Panel defaultSize={showPreview ? 55 : 100} minSize={25} style={{ display: 'flex', flexDirection: 'column' }}>
+                  <Panel 
+                    defaultSize={showPreview ? 100 - previewSize : 100} 
+                    minSize={25} 
+                    style={{ display: 'flex', flexDirection: 'column' }}
+                  >
                     <Editor 
                       selectedFile={selectedFile} 
                       openFiles={openFiles}
@@ -186,8 +205,13 @@ const App: React.FC = () => {
                   {showPreview && (
                     <>
                       <ResizeHandle direction="horizontal" />
-                      <Panel defaultSize={45} minSize={20} style={{ display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${tokens.colors.border}` }}>
-                        <Preview socket={socket} onClose={() => setShowPreview(false)} />
+                      <Panel 
+                        defaultSize={previewSize} 
+                        onResize={setPreviewSize}
+                        minSize={20} 
+                        style={{ display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${tokens.colors.border}` }}
+                      >
+                        <Preview socket={socket} onClose={togglePreview} />
                       </Panel>
                     </>
                   )}
@@ -199,7 +223,12 @@ const App: React.FC = () => {
               {showTerminal && (
                 <>
                   <ResizeHandle direction="vertical" />
-                  <Panel defaultSize={30} minSize={15} style={{ backgroundColor: tokens.colors.surface2, display: 'flex', flexDirection: 'column' }}>
+                  <Panel 
+                    defaultSize={terminalSize} 
+                    onResize={setTerminalSize}
+                    minSize={15} 
+                    style={{ backgroundColor: tokens.colors.surface2, display: 'flex', flexDirection: 'column' }}
+                  >
                     <div style={{ 
                       height: '28px', 
                       backgroundColor: tokens.colors.surface1, 
@@ -225,12 +254,18 @@ const App: React.FC = () => {
 
           {/* 3. Right: Live AI Agent Chat */}
           <ResizeHandle direction="horizontal" />
-          <Panel defaultSize={28} minSize={20} style={{ display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${tokens.colors.border}` }}>
-            <AiPanel 
-              socket={socket} 
-              onFileSelect={handleFileSelect}
-            />
-          </Panel>
+          {showAgentPanel && (
+            <Panel 
+              defaultSize={agentPanelSize} 
+              onResize={setAgentPanelSize}
+              minSize={20} 
+              style={{ display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${tokens.colors.border}` }}
+            >
+              <AgentPanel 
+                socket={socket} 
+              />
+            </Panel>
+          )}
 
         </PanelGroup>
       </div>

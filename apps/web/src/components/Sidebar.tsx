@@ -348,7 +348,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onFileSelect, selectedFile, so
           </button>
           
           <button 
-            onClick={fetchFiles} 
+            onClick={() => fetchFiles()} 
             title="Refresh Explorer"
             style={{ background: 'none', border: 'none', color: tokens.colors.textMuted, cursor: 'pointer', padding: '3px', borderRadius: '3px', display: 'flex', alignItems: 'center' }}
             onMouseEnter={(e) => e.currentTarget.style.color = tokens.colors.textPrimary}
