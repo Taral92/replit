@@ -18,6 +18,7 @@ env/
 # Runtime sandbox data
 workspaces/*
 !workspaces/.gitkeep
+context/*
 
 # Archives
 *.zip

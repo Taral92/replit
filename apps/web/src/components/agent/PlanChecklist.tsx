@@ -1,13 +1,9 @@
 import React from 'react';
 import { Check, Circle } from 'lucide-react';
 
-export interface PlanItem {
-  id: string;
-  text: string;
-  status: 'pending' | 'in-progress' | 'completed';
-}
+import { PlanStep } from '../../store/useAgentStore';
 
-export const PlanChecklist: React.FC<{ plan: PlanItem[] }> = ({ plan }) => {
+export const PlanChecklist: React.FC<{ plan: PlanStep[] }> = ({ plan }) => {
   const completed = plan.filter(p => p.status === 'completed').length;
   
   return (
@@ -22,7 +18,7 @@ export const PlanChecklist: React.FC<{ plan: PlanItem[] }> = ({ plan }) => {
           <div key={item.id} className="flex items-start gap-2 text-sm">
             <div className="mt-0.5">
               {item.status === 'completed' && <Check size={14} className="text-success" />}
-              {item.status === 'in-progress' && (
+              {item.status === 'in_progress' && (
                 <div className="relative flex items-center justify-center w-[14px] h-[14px]">
                   <Circle size={14} className="text-accent absolute" />
                   <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
@@ -30,8 +26,8 @@ export const PlanChecklist: React.FC<{ plan: PlanItem[] }> = ({ plan }) => {
               )}
               {item.status === 'pending' && <Circle size={14} className="text-text-disabled" />}
             </div>
-            <span className={`${item.status === 'completed' ? 'text-text-tertiary' : item.status === 'in-progress' ? 'text-text-primary' : 'text-text-secondary'}`}>
-              {item.text}
+            <span className={`${item.status === 'completed' ? 'text-text-tertiary' : item.status === 'in_progress' ? 'text-text-primary' : 'text-text-secondary'}`}>
+              {item.title}
             </span>
           </div>
         ))}

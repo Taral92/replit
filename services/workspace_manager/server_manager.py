@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from services.agent.gateway.policy import PolicyEngine
+from services.workspace_manager import run_config
 
 logger = logging.getLogger("RunnerIDE-DevServer")
 
@@ -113,16 +114,53 @@ class DevServerManager:
             "logs": list(self.logs)[-50:],
         }
 
-    def _clean_all_competing_processes_and_locks(self):
+    @staticmethod
+    def _port_is_free(port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", port))
+                return True
+            except OSError:
+                return False
+
+    def _pick_port(self, preferred: int) -> int:
         """
-        Permanently eliminates competing daemons, orphaned Next.js processes,
-        and stale .next/dev lockfiles across all candidate ports (3000-3015).
+        The preferred port, or the next free one above it.
+
+        Binding a port that is already taken produces
+        `OSError: [Errno 48] Address already in use`, which surfaces to the user
+        as "Dev Server Failed to Start" with a Python traceback and no
+        indication that the real problem is a leftover process. Cleanup handles
+        the common case; this handles the rest, including ports held by
+        something we have no business killing.
+        """
+        for candidate in range(preferred, preferred + 16):
+            if candidate in (8000,):  # the API itself
+                continue
+            if self._port_is_free(candidate):
+                if candidate != preferred:
+                    logger.info(f"Port {preferred} busy — using {candidate} instead")
+                return candidate
+        logger.warning(f"No free port in {preferred}-{preferred + 15}; using {preferred}")
+        return preferred
+
+    def _clean_all_competing_processes_and_locks(self, extra_ports: Optional[List[int]] = None):
+        """
+        Eliminates competing daemons, orphaned processes, and stale .next/dev
+        lockfiles.
+
+        Scans 3000-3015 plus any explicitly supplied port. The fixed range was
+        written for Next.js and silently missed everything else — a static
+        server on 8080 or a Flask app on 5000 was never cleaned up, so the
+        second start always collided with the first.
         """
         current_pid = os.getpid()
         pids_to_kill = set()
 
-        # 1. Scan and kill all processes holding ports 3000 to 3015
-        for port in range(3000, 3016):
+        scan_ports = list(range(3000, 3016)) + [p for p in (extra_ports or []) if p not in range(3000, 3016)]
+
+        for port in scan_ports:
             try:
                 cmd = ["lsof", "-ti", f":{port}"]
                 out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip()
@@ -156,12 +194,38 @@ class DevServerManager:
         except Exception as e:
             logger.error(f"Error cleaning lockfiles: {e}")
 
-    async def start(self, command: str = "npm run dev", target_port: int = 3000, cwd: Optional[str] = None) -> Dict[str, Any]:
+    async def start(
+        self,
+        command: Optional[str] = None,
+        target_port: Optional[int] = None,
+        cwd: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Starts the dev server. Idempotent: returns current state if already starting or running.
         Eliminates lock conflicts, kills rogue daemons, and cleans .next/dev state.
+
+        Command and port come from run_config.resolve() unless explicitly passed.
+        This method used to default to `npm run dev` and refuse to start anything
+        without a package.json, which made the preview a Next.js feature rather
+        than a workspace feature. It is now stack-agnostic: it runs whatever the
+        resolver says to run.
         """
-        target_cwd = self.workspace_dir
+        try:
+            cfg = run_config.resolve(self.workspace_dir, cwd)
+        except run_config.RunConfigError as e:
+            # Actionable by design — the agent can read this and fix the cause
+            # instead of retrying the same failing command.
+            return {
+                "success": False,
+                "message": str(e),
+                **self.get_status(),
+            }
+
+        target_cwd = cfg.cwd
+
+        # An explicit cwd still goes through policy — the resolver checks
+        # containment, but path validation is the security boundary and must not
+        # be bypassed just because another check happened to run first.
         if cwd:
             valid, p, err = PolicyEngine.resolve_and_validate_path(self.workspace_dir, cwd)
             if not valid or not p:
@@ -171,31 +235,26 @@ class DevServerManager:
                     **self.get_status(),
                 }
             target_cwd = p
-        else:
-            if not (self.workspace_dir / "package.json").exists():
-                subdirs_with_pkg = []
-                try:
-                    for entry in self.workspace_dir.iterdir():
-                        if entry.is_dir() and (entry / "package.json").exists():
-                            subdirs_with_pkg.append(entry)
-                except Exception:
-                    pass
 
-                if len(subdirs_with_pkg) == 1:
-                    target_cwd = subdirs_with_pkg[0]
-                    logger.info(f"Auto-detected cwd with package.json: {target_cwd.name}")
-                elif len(subdirs_with_pkg) > 1:
-                    return {
-                        "success": False,
-                        "message": "Multiple subdirectories contain package.json. Please specify a 'cwd' explicitly.",
-                        **self.get_status(),
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "message": "No package.json found in workspace root or immediate subdirectories. Please specify a 'cwd'.",
-                        **self.get_status(),
-                    }
+        # Caller overrides win; otherwise use what was resolved.
+        command = command or cfg.command
+        target_port = target_port or cfg.port
+
+        # Starting a Node project with no node_modules fails in a way that reads
+        # like a code error. Say what is actually wrong.
+        if cfg.needs_install and cfg.install_command:
+            return {
+                "success": False,
+                "message": (
+                    f"Dependencies are not installed. Run `{cfg.install_command}` "
+                    f"first, then start the server."
+                ),
+                **self.get_status(),
+            }
+
+        for w in cfg.warnings:
+            logger.warning(f"Run config: {w}")
+        logger.info(f"Resolved run config [{cfg.source}]: {cfg.describe()}")
         if self.state in ["starting", "running"] and self.proc and self.proc.returncode is None:
             logger.info(f"Dev server already in state '{self.state}'. Returning existing status.")
             return {
@@ -207,9 +266,21 @@ class DevServerManager:
         # 1. Stop any prior tracked instance cleanly
         await self.stop(silent=True)
 
-        # 2. Lock-conflict resolution: kill any conflicting orphaned process on ports 3000-3015 & clean locks
-        self._clean_all_competing_processes_and_locks()
+        # 2. Clean up conflicts, including on the port we are actually about to
+        # bind — not just the Next.js range.
+        self._clean_all_competing_processes_and_locks(extra_ports=[target_port])
         await asyncio.sleep(0.3)
+
+        # 3. Then confirm the port is genuinely free. Cleanup may have missed a
+        # holder it could not or should not kill, and binding a taken port fails
+        # with a raw traceback that tells the user nothing useful.
+        target_port = self._pick_port(target_port)
+
+        # A static server takes its port from the command string, so the command
+        # has to be rewritten when the port moves — otherwise it binds the
+        # original busy port and the health check waits on the wrong one.
+        if cfg.kind == "static" and target_port != cfg.port:
+            command = command.replace(str(cfg.port), str(target_port))
 
         self.command = command
         self.port = target_port
@@ -327,7 +398,14 @@ class DevServerManager:
                 logger.warning(f"Dev server process exited early with code {self.proc.returncode}. Output:\n{err_out}")
                 return False
 
-            candidate_ports = [self.detected_port] if self.detected_port else [self.port, 3000, 3001]
+            # The port we chose comes first and always. The 3000/3001 fallbacks
+            # exist because Next.js cascades when its port is taken; they must
+            # not shadow a static server or a Flask app on its own port.
+            candidate_ports = (
+                [self.detected_port]
+                if self.detected_port
+                else [self.port] + [p for p in (3000, 3001) if p != self.port]
+            )
             for p in candidate_ports:
                 if not p:
                     continue

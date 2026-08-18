@@ -33,7 +33,25 @@ export interface TerminalResizeEvent extends BaseEvent {
   rows: number;
 }
 
+export interface ToolResult {
+  ok: boolean;
+  summary: string;
+  data: Record<string, any>;
+  error_kind?: string;
+  truncated: boolean;
+}
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped';
+}
+
 // Agent Events
+export interface AgentPlanUpdatedEvent extends BaseEvent {
+  type: 'agent.plan.updated';
+  plan: PlanStep[];
+}
 export interface AgentStartEvent extends BaseEvent {
   type: 'agent.start';
   prompt: string;
@@ -55,6 +73,7 @@ export interface AgentToolStartedEvent extends BaseEvent {
   type: 'agent.tool.started';
   tool_name: string;
   arguments: Record<string, any>;
+  plan_step_id?: string;
 }
 
 export interface AgentToolCompletedEvent extends BaseEvent {
@@ -65,6 +84,7 @@ export interface AgentToolCompletedEvent extends BaseEvent {
   diff?: string;
   added: number;
   removed: number;
+  plan_step_id?: string;
 }
 
 export interface AgentToolFailedEvent extends BaseEvent {
@@ -72,6 +92,17 @@ export interface AgentToolFailedEvent extends BaseEvent {
   tool_name: string;
   error: string;
   duration_ms: number;
+  plan_step_id?: string;
+}
+
+export interface AgentToolProgressEvent extends BaseEvent {
+  type: 'agent.tool.progress';
+  run_id: string;
+  call_id: string;
+  phase: 'writing' | 'running' | 'reading';
+  target: string;
+  bytes_written?: number;
+  plan_step_id?: string;
 }
 
 // Workspace & File Events
@@ -174,9 +205,11 @@ export type IDEEvent =
   | AgentStartEvent
   | AgentStatusEvent
   | AgentMessageEvent
+  | AgentPlanUpdatedEvent
   | AgentToolStartedEvent
   | AgentToolCompletedEvent
   | AgentToolFailedEvent
+  | AgentToolProgressEvent
   | FileReadRequest
   | FileWriteRequest
   | FilePatchRequest

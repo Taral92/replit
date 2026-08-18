@@ -7,7 +7,21 @@ export const ToolCallRow: React.FC<{ step: AgentStep; onRetry?: () => void }> = 
   const [expanded, setExpanded] = useState(false);
   
   const isError = step.status === 'error';
-  const Icon = step.tool === 'run_command' ? Terminal : step.tool === 'search' ? Search : FileCode;
+  const Icon = ['shell', 'run_command'].includes(step.tool) ? Terminal : step.tool === 'search' ? Search : FileCode;
+  
+  const getVerb = () => {
+    const isCompleted = step.status === 'completed';
+    if (['write_file', 'patch_file', 'edit_file'].includes(step.tool)) {
+      return isCompleted ? 'edited' : 'editing';
+    }
+    if (['shell', 'run_command', 'list_processes'].includes(step.tool)) {
+      return isCompleted ? 'ran' : 'running';
+    }
+    if (['read_file', 'list_dir', 'search'].includes(step.tool)) {
+      return isCompleted ? 'read' : 'reading';
+    }
+    return isCompleted ? 'completed' : 'running';
+  };
   
   if (isError) {
     return (
@@ -43,11 +57,19 @@ export const ToolCallRow: React.FC<{ step: AgentStep; onRetry?: () => void }> = 
           <ChevronRight size={14} className="text-text-tertiary mr-1.5" />
         )}
         <Icon size={14} className="text-text-secondary mr-2" />
-        <span className="text-base text-text-primary capitalize mr-2">{step.action}</span>
+        <span className="text-sm font-medium text-text-primary capitalize mr-2">{getVerb()}</span>
         <span className="text-sm font-mono text-text-tertiary truncate flex-1">
           {step.target}
+          {/* Animated ellipsis while in flight. This is what makes a 40-second
+              npm install read as working rather than hung. */}
+          {step.status === 'running' && (
+            <span className="inline-block w-4 text-left text-text-tertiary">
+              <span className="animate-ellipsis">…</span>
+            </span>
+          )}
         </span>
-        
+
+
         {step.status === 'completed' && (
           <div className="flex items-center text-success ml-2">
             {step.added !== undefined && step.added > 0 && <span className="text-xs mr-1.5">+{step.added}</span>}

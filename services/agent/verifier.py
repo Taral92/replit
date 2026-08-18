@@ -246,54 +246,19 @@ class IndependentVerifier:
     """
 
     @staticmethod
-    async def generate_checklist(prompt: str, llm: Optional[Any] = None) -> List[str]:
-        """Turns the user's prompt into 3-6 concrete, checkable criteria before execution."""
-        if not llm:
-            llm = ChatOpenAI(
-                model=settings.DEFAULT_AGENT_MODEL,
-                api_key=settings.OPENAI_API_KEY,
-                temperature=0.0,
-            )
-
-        system_msg = SystemMessage(
-            content=(
-                "You are an expert software requirements analyst.\n"
-                "Given a user prompt, break it down into 3-6 concrete, verifiable, checkable checklist items.\n"
-                "Each item must be measurable through code inspection or diffs (e.g. components created, state handled, routes linked).\n"
-                "Return ONLY a JSON array of strings, e.g. [\"Item 1\", \"Item 2\", \"Item 3\"]."
-            )
-        )
-        user_msg = HumanMessage(content=f"User Request:\n{prompt}")
-
-        try:
-            res = await llm.ainvoke([system_msg, user_msg])
-            content = str(res.content).strip()
-            match = re.search(r"\[.*\]", content, re.DOTALL)
-            if match:
-                items = json.loads(match.group(0))
-                if isinstance(items, list) and len(items) > 0:
-                    return [str(i).strip() for i in items if str(i).strip()][:6]
-        except Exception as e:
-            logger.error(f"Error generating checklist: {e}")
-
-        return [
-            "Requested feature files exist and are implemented",
-            "State and logic work without runtime errors",
-            "UI components are exported and connected",
-        ]
-
-    @staticmethod
     async def verify_diff(
         prompt: str,
-        checklist: List[str],
+        plan: List[Dict[str, Any]],
         diff_text: str,
         touched_files: List[str],
         llm: Optional[Any] = None,
+        model: Optional[str] = None,
     ) -> TurnVerificationReport:
         """
-        Independent Verification Call — fresh context, given ONLY the original checklist
+        Independent Verification Call — fresh context, given ONLY the original plan
         and the actual diff text. Marks each item pass/fail citing exact lines.
         """
+        checklist = [step.get("title", "Unnamed step") for step in plan]
         added = len([l for l in diff_text.splitlines() if l.startswith("+") and not l.startswith("+++")])
         removed = len([l for l in diff_text.splitlines() if l.startswith("-") and not l.startswith("---")])
         files_count = len(touched_files)
@@ -305,9 +270,18 @@ class IndependentVerifier:
             warning_msg = "\n⚠️ Warning: Diff size is surprisingly small for a multi-step checklist, but passed to LLM for review."
 
         if not llm:
-            llm = ChatOpenAI(
-                model=settings.DEFAULT_AGENT_MODEL,
-                api_key=settings.OPENAI_API_KEY,
+            # Follow the model the agent actually resolved to. Hardcoding
+            # DEFAULT_AGENT_MODEL here meant a turn could run the agent on
+            # Claude and the verifier on GPT-4o — two providers billed per
+            # turn, with the verifier on the more expensive one.
+            from services.agent.llm import get_llm
+            if settings.local_mode:
+                verify_model = settings.LOCAL_MODEL
+            else:
+                verify_model = model or settings.default_model
+            llm = get_llm(
+                model=verify_model,
+                purpose="verifier",
                 temperature=0.0,
             )
 

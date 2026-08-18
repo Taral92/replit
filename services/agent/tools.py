@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 try:
     from langchain_core.tools import tool
@@ -8,6 +8,7 @@ except ImportError:
 
 from services.agent.gateway.tool_gateway import ToolGateway
 from services.agent.verifier import ProjectVerifier
+from packages.protocol.events import PlanStep
 
 
 def create_agent_tools(gateway: ToolGateway):
@@ -17,152 +18,107 @@ def create_agent_tools(gateway: ToolGateway):
     """
 
     @tool
-    async def read_file(path: str) -> str:
-        """Read the contents of a file in the workspace."""
-        res = await gateway.execute_tool("read_file", path=path)
-        if not res.get("success"):
-            return f"Error reading file: {res.get('error')}"
-        if res.get("is_binary"):
-            return f"[Binary file, size: {res.get('size_bytes')} bytes]"
-        return res.get("content", "")
+    async def read_file(path: str, start_line: Optional[int] = None, end_line: Optional[int] = None) -> str:
+        """Read the contents of a file in the workspace. Optionally specify a line range."""
+        res = await gateway.execute_tool("read_file", path=path, start_line=start_line, end_line=end_line)
+        return res.summary
 
     @tool
     async def write_file(path: str, content: str) -> str:
         """Write content to a file in the workspace. Automatically creates missing directories."""
         res = await gateway.execute_tool("write_file", path=path, content=content)
-        if not res.get("success"):
-            return f"Error writing file: {res.get('error')}"
-        return f"Successfully wrote {path} (+{res.get('added', 0)} / -{res.get('removed', 0)} lines).\nDiff:\n{res.get('diff', '')}"
+        return res.summary
 
     @tool
-    async def patch_file(path: str, target_content: str, replacement_content: str) -> str:
-        """Patch a file by finding a target block of code and replacing it."""
+    async def edit_file(path: str, old: str, new: str) -> str:
+        """Edit a file by finding a target block of code (old) and replacing it with (new)."""
         res = await gateway.execute_tool(
-            "patch_file",
+            "edit_file",
             path=path,
-            target_content=target_content,
-            replacement_content=replacement_content,
+            old=old,
+            new=new,
         )
-        if not res.get("success"):
-            return f"Error patching file: {res.get('error')}"
-        return f"Successfully patched {path}.\nDiff:\n{res.get('diff', '')}"
+        return res.summary
 
     @tool
     async def list_dir(path: str = "", recursive: bool = False) -> str:
         """List files and folders in the workspace directory."""
         res = await gateway.execute_tool("list_dir", path=path, recursive=recursive)
-        if not res.get("success"):
-            return f"Error listing directory: {res.get('error')}"
-        items = res.get("items", [])
-        if not items:
-            return f"Directory '{path}' is empty."
-        output = [f"{'📁' if item['type'] == 'directory' else '📄'} {item['path']}" for item in items]
-        return "\n".join(output)
+        return res.summary
 
     @tool
-    async def search(query: str, path: str = "") -> str:
-        """Search for a string across workspace files (ignores node_modules/git)."""
-        res = await gateway.execute_tool("search", query=query, path=path)
-        if not res.get("success"):
-            return f"Error searching: {res.get('error')}"
-        matches = res.get("matches", [])
-        if not matches:
-            return f"No matches found for query '{query}'."
-        lines = [f"{m['file_path']}:{m['line_number']} | {m['line_content'].strip()}" for m in matches]
-        return "\n".join(lines)
+    async def search(query: str, path: str = "", kind: str = "content") -> str:
+        """Search for a string across workspace files (ignores node_modules/git). Kind can be 'content' or 'filename'."""
+        res = await gateway.execute_tool("search", query=query, path=path, kind=kind)
+        return res.summary
 
     @tool
-    async def run_command(command: str, timeout_seconds: Optional[int] = 60) -> str:
-        """Execute a short-lived shell command in the workspace (e.g. 'npm install', 'git status')."""
-        res = await gateway.execute_tool("run_command", command=command, timeout_seconds=timeout_seconds)
-        if not res.get("success"):
-            return f"Command failed or error: {res.get('error')}\nStdout:\n{res.get('stdout', '')}\nStderr:\n{res.get('stderr', '')}"
-        out = (res.get("stdout", "") + "\n" + res.get("stderr", "")).strip()
-        return f"Command finished with code {res.get('exit_code')}.\nOutput:\n{out}"
+    async def shell(command: str, cwd: Optional[str] = None, timeout_ms: Optional[int] = 60000, background: bool = False) -> str:
+        """Execute a shell command. Set background=True for long-running servers. Kills can be run as shell('kill <pid>')."""
+        res = await gateway.execute_tool(
+            "shell",
+            command=command,
+            cwd=cwd,
+            timeout_ms=timeout_ms,
+            background=background
+        )
+        return res.summary
 
     @tool
-    async def start_process(command: str, cwd: Optional[str] = None) -> str:
-        """Start a long-running background development server process (e.g. 'npm run dev', 'uvicorn app:main')."""
-        res = await gateway.execute_tool("start_process", command=command, cwd=cwd)
-        if not res.get("success") and "process_id" not in res:
-            return f"Error starting process: {res.get('error')}"
-        return f"Started background process {res.get('process_id')} (PID: {res.get('pid')}) for command: '{command}'"
-
-    @tool
-    async def stop_process(process_id: str) -> str:
-        """Stop a running background process by ID."""
-        res = await gateway.execute_tool("stop_process", process_id=process_id)
-        if res.get("success"):
-            return f"Process {process_id} stopped successfully."
-        return f"Failed to stop process {process_id}."
-
-    @tool
-    async def get_processes() -> str:
+    async def list_processes() -> str:
         """List all active and stopped background processes and their listening ports."""
-        res = await gateway.execute_tool("get_processes")
-        procs = res.get("processes", [])
-        if not procs:
-            return "No background processes currently running."
-        lines = [f"[{p['status']}] {p['process_id']} (PID {p.get('pid')}) - '{p['command']}' (Ports: {', '.join(p.get('ports', []))})" for p in procs]
-        return "\n".join(lines)
-
-    @tool
-    async def start_dev_server(command: str = "npm run dev", port: int = 3000, cwd: Optional[str] = None) -> str:
-        """Start the single-owner development server and await verified HTTP readiness."""
-        sandbox = getattr(gateway, "sandbox", None)
-        if sandbox and hasattr(sandbox, "server_manager"):
-            res = await sandbox.server_manager.start(command=command, target_port=port, cwd=cwd)
-            if res.get("success"):
-                return f"✅ Dev server is healthy and running on {res.get('url')} (PID {res.get('pid')})."
-            return f"❌ Failed to start dev server: {res.get('message')}\nError/Logs:\n{res.get('error')}"
-        return "Dev server manager not available in sandbox."
-
-    @tool
-    async def stop_dev_server() -> str:
-        """Stop the workspace development server."""
-        sandbox = getattr(gateway, "sandbox", None)
-        if sandbox and hasattr(sandbox, "server_manager"):
-            res = await sandbox.server_manager.stop()
-            return f"Dev server stopped ({res.get('state')})."
-        return "Dev server manager not available."
-
-    @tool
-    async def get_server_status() -> str:
-        """Get the current live health and state of the workspace development server ('stopped', 'starting', 'running', 'crashed')."""
-        sandbox = getattr(gateway, "sandbox", None)
-        if sandbox and hasattr(sandbox, "server_manager"):
-            st = sandbox.server_manager.get_status()
-            if st.get("state") == "running":
-                return f"Server is RUNNING on {st.get('url')} (PID {st.get('pid')})."
-            elif st.get("state") == "starting":
-                return "Server is currently STARTING up and awaiting HTTP readiness."
-            elif st.get("state") == "crashed":
-                return f"Server is CRASHED.\nError:\n{st.get('error')}"
-            else:
-                return "Server is STOPPED."
-        return "Dev server manager not available."
+        res = await gateway.execute_tool("list_processes")
+        return res.summary
 
     @tool
     async def verify_project() -> str:
         """Automatically verify the current workspace by running project-specific tests and builds."""
-        result = await ProjectVerifier.verify(gateway.sandbox)
-        status = "✅ PASSED" if result.passed else "❌ FAILED"
-        return f"Project Verification ({result.language}): {status}\nChecks: {', '.join(result.checks_run)}\nDetails:\n{result.details}"
+        res = await gateway.execute_tool("verify_project")
+        return res.summary
+
+    @tool
+    async def update_plan(plan: List[PlanStep], explanation: Optional[str] = None) -> str:
+        """Create or revise the task plan. Call this before starting work, and again whenever the plan changes. Each step has: id, title, status."""
+        plan_dicts = [p.model_dump() for p in plan]
+        res = await gateway.execute_tool("update_plan", plan=plan_dicts, explanation=explanation)
+        return res.summary
+
+    @tool
+    async def ask_user(question: str, options: List[str]) -> str:
+        """Ask the user a single blocking question and wait for their answer.
+
+        Use ONLY when the workspace is empty and a choice is expensive to reverse
+        (framework, language, or architecture) and the request does not already
+        imply an answer. Provide 2-4 concrete options.
+
+        Do NOT use this to confirm work you have already done, to ask permission
+        to proceed, or for anything a sensible default covers. Asking has a real
+        cost: it stops the run and waits for a human.
+        """
+        from services.agent.interaction import broker
+
+        opts = [str(o) for o in (options or [])][:4]
+        if len(opts) < 2:
+            return "ask_user requires at least two concrete options. Decide yourself instead."
+
+        return await broker.ask(
+            session_id=gateway.session_id,
+            question=str(question),
+            options=opts,
+            emit=gateway._emit_event,
+        )
 
     return [
         read_file,
         write_file,
-        patch_file,
+        edit_file,
         list_dir,
         search,
-        run_command,
-        start_dev_server,
-        stop_dev_server,
-        get_server_status,
-        start_process,
-        stop_process,
-        get_processes,
+        shell,
+        list_processes,
         verify_project,
+        update_plan,
+        ask_user,
     ]
 
 

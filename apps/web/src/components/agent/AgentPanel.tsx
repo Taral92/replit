@@ -3,6 +3,7 @@ import { Socket } from 'socket.io-client';
 import { useAgentStore } from '../../store/useAgentStore';
 import { SessionSwitcher } from './SessionSwitcher';
 import { TurnList } from './TurnList';
+import { QuestionPrompt } from './QuestionPrompt';
 import { Composer } from './Composer';
 import { ArrowDown } from 'lucide-react';
 
@@ -12,7 +13,7 @@ interface AgentPanelProps {
 }
 
 export const AgentPanel: React.FC<AgentPanelProps> = ({ socket }) => {
-  const { turns, activeTurnId } = useAgentStore();
+  const { turns, activeTurnId, pendingQuestion, setPendingQuestion } = useAgentStore();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   
@@ -54,6 +55,17 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({ socket }) => {
     jumpToLatest();
   };
 
+  const handleAnswer = (answer: string) => {
+    if (!socket || !pendingQuestion) return;
+    socket.emit('agent.answer', {
+      interaction_id: pendingQuestion.interactionId,
+      answer,
+    });
+    // Clear immediately: the server has the answer, and leaving the prompt up
+    // invites a second click that would be rejected as stale.
+    setPendingQuestion(null);
+  };
+
   const handleStop = () => {
     if (!socket || !activeTurnId) return;
     socket.emit('agent.stop', { turn_id: activeTurnId });
@@ -75,6 +87,9 @@ export const AgentPanel: React.FC<AgentPanelProps> = ({ socket }) => {
         style={{ scrollBehavior: autoScroll ? 'auto' : 'smooth' }}
       >
         <TurnList turns={turns} />
+        {pendingQuestion && (
+          <QuestionPrompt question={pendingQuestion} onAnswer={handleAnswer} />
+        )}
       </div>
 
       {/* Jump to latest pill */}

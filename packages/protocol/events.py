@@ -50,7 +50,24 @@ class TerminalResizeEvent(BaseEvent):
 from pydantic import BaseModel, Field, field_validator
 
 
+class ToolResult(BaseModel):
+    ok: bool
+    summary: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+    error_kind: Optional[str] = None
+    truncated: bool = False
+
+
+class PlanStep(BaseModel):
+    id: str
+    title: str
+    status: Literal["pending", "in_progress", "completed", "skipped"]
+
+
 # --- Agent Events ---
+class AgentPlanUpdatedEvent(BaseEvent):
+    type: Literal["agent.plan.updated"] = "agent.plan.updated"
+    plan: List[PlanStep]
 class AgentStartEvent(BaseEvent):
     type: Literal["agent.start"] = "agent.start"
     prompt: str
@@ -79,6 +96,7 @@ class AgentToolStartedEvent(BaseEvent):
     type: Literal["agent.tool.started"] = "agent.tool.started"
     tool_name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
+    plan_step_id: Optional[str] = None
 
 
 class AgentToolCompletedEvent(BaseEvent):
@@ -89,6 +107,7 @@ class AgentToolCompletedEvent(BaseEvent):
     diff: Optional[str] = None
     added: int = 0
     removed: int = 0
+    plan_step_id: Optional[str] = None
 
 
 class AgentToolFailedEvent(BaseEvent):
@@ -96,6 +115,17 @@ class AgentToolFailedEvent(BaseEvent):
     tool_name: str
     error: str
     duration_ms: int = 0
+    plan_step_id: Optional[str] = None
+
+
+class AgentToolProgressEvent(BaseEvent):
+    type: Literal["agent.tool.progress"] = "agent.tool.progress"
+    run_id: str
+    call_id: str
+    phase: Literal["writing", "running", "reading"]
+    target: str
+    bytes_written: Optional[int] = None
+    plan_step_id: Optional[str] = None
 
 
 # --- Workspace & File Events ---

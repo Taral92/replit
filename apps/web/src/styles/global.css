@@ -6,6 +6,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Ellipsis that breathes while a tool is in flight. Deliberately slow — a
+   fast blink reads as an error state. */
+@keyframes ellipsisPulse {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
+}
+.animate-ellipsis {
+  animation: ellipsisPulse 1.2s var(--ease-out) infinite;
+}
+
 @keyframes fadeSlideUp {
   from {
     opacity: 0;

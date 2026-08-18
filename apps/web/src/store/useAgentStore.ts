@@ -7,6 +7,12 @@ export interface ToolCallArgs {
   [key: string]: any;
 }
 
+export interface PlanStep {
+  id: string;
+  title: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped';
+}
+
 export interface AgentStep {
   tool: string;
   target: string;
@@ -14,11 +20,23 @@ export interface AgentStep {
   type: string;
   status: 'running' | 'completed' | 'error';
   args?: ToolCallArgs;
+  planStepId?: string;
   added?: number;
   removed?: number;
   diff?: string;
   startTimestamp: number;
   endTimestamp?: number;
+  // Live phase from agent.step.progress — "writing" | "running" | "reading".
+  // Without this a 40-second npm install renders as a frozen row.
+  phase?: string;
+  lastProgressAt?: number;
+}
+
+export interface PendingQuestion {
+  interactionId: string;
+  kind: string;
+  question: string;
+  options: string[];
 }
 
 export interface AgentTurn {
@@ -29,6 +47,7 @@ export interface AgentTurn {
   prompt: string;
   status: string;
   message: string;
+  plan?: PlanStep[];
   steps: AgentStep[];
   error?: string;
 }
@@ -43,7 +62,11 @@ interface AgentState {
   addTurn: (turn: AgentTurn) => void;
   appendMessage: (turnId: string, chunk: string) => void;
   updateStatus: (turnId: string, status: string) => void;
+  pendingQuestion: PendingQuestion | null;
+  setPendingQuestion: (q: PendingQuestion | null) => void;
+  updatePlan: (turnId: string, plan: PlanStep[]) => void;
   addStep: (turnId: string, step: Omit<AgentStep, 'endTimestamp'>) => void;
+  stepProgress: (turnId: string, target: string, phase: string) => void;
   completeStep: (turnId: string, tool: string, target: string, result: Partial<AgentStep>) => void;
   completeTurn: (turnId: string, data: { endedAt: number; durationMs: number; error?: string }) => void;
   
@@ -54,6 +77,7 @@ interface AgentState {
 export const useAgentStore = create<AgentState>((set) => ({
   turns: [],
   activeTurnId: null,
+  pendingQuestion: null,
   sessions: [{ id: 'default', name: 'Current Session' }],
   activeSessionId: 'default',
 
@@ -78,10 +102,34 @@ export const useAgentStore = create<AgentState>((set) => ({
     )
   })),
 
+  setPendingQuestion: (q) => set({ pendingQuestion: q }),
+
+  updatePlan: (turnId, plan) => set((state) => ({
+    turns: state.turns.map(t => 
+      t.id === turnId ? { ...t, plan } : t
+    )
+  })),
+
   addStep: (turnId, step) => set((state) => ({
     turns: state.turns.map(t => {
       if (t.id !== turnId) return t;
       return { ...t, steps: [...t.steps, step] };
+    })
+  })),
+
+  // Progress ticks arrive ~4/sec while a tool is in flight. They only touch the
+  // still-running step, so completed rows stay frozen.
+  stepProgress: (turnId, target, phase) => set((state) => ({
+    turns: state.turns.map(t => {
+      if (t.id !== turnId) return t;
+      return {
+        ...t,
+        steps: t.steps.map(s =>
+          s.target === target && s.status === 'running'
+            ? { ...s, phase, lastProgressAt: Date.now() }
+            : s
+        ),
+      };
     })
   })),
 
@@ -102,6 +150,7 @@ export const useAgentStore = create<AgentState>((set) => ({
   })),
 
   completeTurn: (turnId, data) => set((state) => ({
+    pendingQuestion: null,
     turns: state.turns.map(t => 
       t.id === turnId ? { ...t, ...data } : t
     ),

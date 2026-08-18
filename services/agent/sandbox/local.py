@@ -310,21 +310,105 @@ class LocalSandbox(Sandbox):
         env = self._get_enhanced_env()
 
         try:
-            # Parse command safely into tokens
-            args = shlex.split(command)
-            if not args:
+            if not command.strip():
                 return CommandResult(success=False, command=command, error="Empty command.")
 
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                cwd=str(self.workspace_dir),
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            # Commands containing shell operators must run through a shell.
+            # create_subprocess_exec treats "&&", "|" and ">" as literal
+            # arguments, which is why commands like `pwd && ls -la` were failing.
+            needs_shell = any(op in command for op in ("&&", "||", "|", ">", "<", ";", "$(", "`", "*"))
+
+            if needs_shell:
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    cwd=str(self.workspace_dir),
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                args = shlex.split(command)
+                if not args:
+                    return CommandResult(success=False, command=command, error="Empty command.")
+                proc = await asyncio.create_subprocess_exec(
+                    *args,
+                    cwd=str(self.workspace_dir),
+                    env=env,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+            stdout_chunks: list = []
+            stderr_chunks: list = []
+
+            # Terminal output is buffered and flushed on a timer rather than
+            # emitted per line. Awaiting one websocket emit per line stalls the
+            # read loop on network I/O — with `npm install` producing thousands
+            # of lines, that is what made the terminal crawl. xterm cannot
+            # render faster than the display refresh anyway, so batching costs
+            # nothing visually.
+            pending: list = []
+
+            async def flush_terminal():
+                if not pending or not self.on_terminal_output:
+                    return
+                batch = "".join(pending)
+                pending.clear()
+                try:
+                    await self.on_terminal_output(batch)
+                except Exception:
+                    pass
+
+            async def flusher():
+                while True:
+                    await asyncio.sleep(0.05)
+                    await flush_terminal()
+
+            async def read_stream(stream, chunks_list):
+                async for line in stream:
+                    decoded = line.decode("utf-8", errors="replace")
+                    chunks_list.append(decoded)
+                    if self.on_terminal_output:
+                        pending.append(decoded)
+
+            # Readers run as named tasks so they can be cancelled and their
+            # exceptions collected. Gathering coroutines inline meant a timeout
+            # cancelled them with nobody retrieving the CancelledError, which
+            # asyncio then reported as "exception was never retrieved".
+            stdout_task = asyncio.create_task(read_stream(proc.stdout, stdout_chunks))
+            stderr_task = asyncio.create_task(read_stream(proc.stderr, stderr_chunks))
+            flush_task = asyncio.create_task(flusher())
+
+            async def shutdown_readers():
+                for t in (stdout_task, stderr_task, flush_task):
+                    t.cancel()
+                # return_exceptions collects the CancelledErrors so they are
+                # retrieved rather than logged as orphaned futures.
+                await asyncio.gather(
+                    stdout_task, stderr_task, flush_task, return_exceptions=True
+                )
+                await flush_terminal()
+
             try:
-                stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=float(timeout))
+                # Wait on the PROCESS, not on the readers. A shell command whose
+                # child holds the pipe open keeps the readers blocked long after
+                # the command itself has finished — waiting on them was making
+                # ordinary commands hang until the timeout.
+                await asyncio.wait_for(proc.wait(), timeout=float(timeout))
+
+                # Give the readers a brief grace period to drain buffered output,
+                # then stop regardless.
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+
+                await shutdown_readers()
             except asyncio.TimeoutError:
+                await shutdown_readers()
                 proc.kill()
                 await proc.wait()
                 duration = int((time.time() - start_time) * 1000)
@@ -337,8 +421,8 @@ class LocalSandbox(Sandbox):
                 )
 
             duration = int((time.time() - start_time) * 1000)
-            stdout = stdout_data.decode("utf-8", errors="replace")
-            stderr = stderr_data.decode("utf-8", errors="replace")
+            stdout = "".join(stdout_chunks)
+            stderr = "".join(stderr_chunks)
 
             # Output truncation
             truncated = False

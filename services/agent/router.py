@@ -55,28 +55,48 @@ class ModelRouter:
 
     @classmethod
     def anthropic_available(cls) -> bool:
-        """True only if a key is configured AND it has not already failed auth."""
+        """
+        True if Claude is reachable at all.
+
+        In Bedrock mode there is no ANTHROPIC_API_KEY — AWS credentials carry
+        the auth — so the key check would otherwise route every coding task to
+        OpenAI and the Bedrock branch would never be hit.
+        """
+        if settings.bedrock_mode:
+            return True
         return bool(settings.ANTHROPIC_API_KEY) and not cls._anthropic_disabled
 
     @classmethod
-    def is_conversational_query(cls, prompt: str) -> bool:
+    def is_conversational_query(cls, prompt: str, has_history: bool = False) -> bool:
         """
-        Determines if a prompt is a pure conversational question / greeting
-        that does not require editing files, generating checklists, or auditing diffs.
+        True if this can be answered by a single stateless reply.
+
+        `has_history` matters enormously. The fast path does NOT load the
+        conversation thread — it sends one system message and the user's text,
+        nothing else. That is correct for "hi" on an empty session and badly
+        wrong for "continue" after the agent stopped at the iteration cap: the
+        reply came back as "I don't see any previous context", because there
+        genuinely wasn't any.
+
+        So once a conversation exists, only unmistakable social phrases take the
+        fast path. Anything short and ambiguous — "continue", "yes", "1", "go
+        on" — is a continuation of work and must reach the main loop with the
+        thread attached.
         """
         trimmed = prompt.strip()
         if not trimmed:
             return True
 
-        # If it explicitly matches conversational greetings/questions and doesn't ask for coding actions
         if CONVERSATIONAL_PATTERNS.search(trimmed):
             if not CODING_ACTION_PATTERNS.search(trimmed):
                 return True
 
-        # Very short non-command inputs (e.g. "ok", "cool", "nice", "hello there")
-        words = trimmed.split()
-        if len(words) <= 3 and not CODING_ACTION_PATTERNS.search(trimmed):
-            return True
+        # The short-input heuristic is only safe on a fresh session. With
+        # history present it swallows every terse follow-up.
+        if not has_history:
+            words = trimmed.split()
+            if len(words) <= 3 and not CODING_ACTION_PATTERNS.search(trimmed):
+                return True
 
         return False
 
@@ -86,6 +106,20 @@ class ModelRouter:
         Returns (resolved_model_name, reasoning_description).
         """
         trimmed = prompt.strip()
+
+        # 0. Local mode short-circuit. An Ollama/LM Studio endpoint serves one
+        # model, so routing between providers is meaningless — and asking for
+        # "gpt-4o" against localhost:11434 would just 404.
+        if settings.local_mode:
+            return settings.LOCAL_MODEL, f"🖥️ Local Model ({settings.LOCAL_MODEL})"
+
+        # 0b. Bedrock mode: every request goes to AWS, nothing to OpenAI or the
+        # Anthropic API. Short-circuited here rather than filtered later because
+        # several branches below hardcode OpenAI model names — the deep-debug
+        # path returns "gpt-4o" outright, and the conversational fast path uses
+        # FAST_AGENT_MODEL. Either would silently bill a second provider.
+        if settings.bedrock_mode:
+            return settings.BEDROCK_MODEL, f"☁️ Bedrock ({settings.BEDROCK_MODEL})"
 
         # 1. Manual user override
         if requested_model and requested_model != "auto":
@@ -101,18 +135,18 @@ class ModelRouter:
             elif "4o" in clean_model:
                 return "gpt-4o", "Manual Selection (GPT-4o)"
             
-            return settings.DEFAULT_AGENT_MODEL, f"Manual Selection (Fallback: '{requested_model}' is unsupported/deprecated)"
+            return settings.default_model, f"Manual Selection (Fallback: '{requested_model}' is unsupported/deprecated)"
 
         # 2. Conversational greetings
         if cls.is_conversational_query(trimmed):
-            return settings.FAST_AGENT_MODEL, "⚡ Auto Router: Routed to Fast Model (Conversational Query)"
+            return settings.fast_model, "⚡ Auto Router: Routed to Fast Model (Conversational Query)"
 
         if SIMPLE_QUERY_PATTERNS.search(trimmed):
-            return settings.FAST_AGENT_MODEL, "⚡ Auto Router: Routed to Fast Model (Workspace Inspection)"
+            return settings.fast_model, "⚡ Auto Router: Routed to Fast Model (Workspace Inspection)"
 
         # 3. Deep Reasoning & Error Debugging
         if DEEP_DEBUG_PATTERNS.search(trimmed):
-            return "gpt-4o", "🧠 Auto Router: Routed to High-Precision Model (Error Debugging)"
+            return settings.default_model, "🧠 Auto Router: High-Precision Model (Error Debugging)"
 
         # 4. Standard Feature Coding & Implementation
         if cls.anthropic_available():

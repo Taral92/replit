@@ -114,7 +114,10 @@ export const Preview: React.FC<PreviewProps> = ({ socket, onClose }) => {
     if (!socket) return;
     setServerState('starting');
     setServerError(null);
-    socket.emit('server.start', { command: 'npm run dev', port: serverPort });
+    // No command or port: the backend resolves both from the project
+    // (run_config). Sending 'npm run dev' from here overrode that and broke
+    // every non-Node project — a static site, a Flask app, a Go binary.
+    socket.emit('server.start', {});
   };
 
   const handleStopServer = () => {
@@ -124,11 +127,29 @@ export const Preview: React.FC<PreviewProps> = ({ socket, onClose }) => {
 
   const handleNavigate = () => {
     let finalUrl = inputUrl.trim();
-    if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
+    if (!finalUrl) return;
+
+    // Accept a bare port ("8080") or a bare host:port ("localhost:5000") as well
+    // as a full URL, so you can open anything the agent started without having
+    // to type a scheme.
+    if (/^\d+$/.test(finalUrl)) {
+      finalUrl = `http://localhost:${finalUrl}`;
+    } else if (!/^https?:\/\//.test(finalUrl)) {
       finalUrl = `http://${finalUrl}`;
     }
+
     setActiveUrl(finalUrl);
     setInputUrl(finalUrl);
+
+    // Keep the port badge in sync, otherwise it keeps showing whatever the
+    // backend last reported while the iframe is somewhere else entirely.
+    const portMatch = finalUrl.match(/:(\d+)/);
+    if (portMatch) setServerPort(Number(portMatch[1]));
+
+    // Leaving this as 'stopped' shows the "start the dev server" empty state
+    // over the top of a page that is loading fine.
+    setServerState('running');
+    setServerError(null);
     triggerReload();
   };
 
@@ -262,7 +283,7 @@ export const Preview: React.FC<PreviewProps> = ({ socket, onClose }) => {
             value={inputUrl}
             onChange={(e) => setInputUrl(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleNavigate()}
-            placeholder="http://localhost:3001"
+            placeholder="8080, localhost:5000, or a full URL"
             style={{ 
               width: '100%', 
               height: '24px',

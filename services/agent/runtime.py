@@ -1,6 +1,7 @@
 import asyncio
 import re
 import time
+from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -19,6 +20,7 @@ from packages.protocol.events import (
 )
 from services.agent.context import SYSTEM_INSTRUCTIONS, ContextManager
 from services.agent.gateway.tool_gateway import ToolGateway
+from services.agent import metering, project_context
 from services.agent.router import ModelRouter
 from services.agent.tools import create_agent_tools
 from services.agent.verifier import IndependentVerifier, TurnVerificationReport
@@ -72,44 +74,120 @@ class AgentRuntime:
         self.checkpointer = MemorySaver()
         self.graphs: Dict[str, Any] = {}
 
+    # Workspace generation per session. Incremented when the workspace is
+    # emptied, which invalidates every file fact the agent has accumulated.
+    _generations: Dict[str, int] = {}
+    _was_empty: Dict[str, bool] = {}
+
+    def _workspace_generation(self, session_id: str) -> int:
+        """
+        Returns the current history generation, bumping it when the workspace
+        transitions from populated to empty.
+
+        Only the populated → empty edge bumps. Starting empty and creating files
+        must NOT reset — that is the normal case and would wipe the agent's
+        memory mid-build.
+        """
+        try:
+            root = Path(self.gateway.sandbox.workspace_dir)
+            meaningful = [
+                p for p in root.iterdir()
+                if not p.name.startswith(".") and p.name not in ("node_modules",)
+            ]
+            is_empty = len(meaningful) == 0
+        except OSError:
+            return self._generations.get(session_id, 0)
+
+        gen = self._generations.get(session_id, 0)
+        previously_populated = self._was_empty.get(session_id) is False
+
+        if is_empty and previously_populated:
+            gen += 1
+            self._generations[session_id] = gen
+            print(
+                f"[Agent Runtime] Workspace emptied — starting history generation "
+                f"{gen} for session {session_id[:8]}. Prior conversation discarded."
+            )
+
+        self._was_empty[session_id] = is_empty
+        return gen
+
+    def _thread_has_history(self, config: Dict[str, Any]) -> bool:
+        """
+        Whether this thread already holds a conversation.
+
+        Read straight from the checkpointer rather than a graph, because this is
+        needed before a model has been resolved — and all graphs share one
+        checkpointer, so the answer is the same either way.
+        """
+        try:
+            tup = self.checkpointer.get_tuple(config)
+            if not tup or not tup.checkpoint:
+                return False
+            msgs = (tup.checkpoint.get("channel_values") or {}).get("messages") or []
+            return len(msgs) > 0
+        except Exception:
+            return False
+
+    def _repair_thread_state(self, graph: Any, config: Dict[str, Any]) -> None:
+        """
+        Surgically remove orphaned tool calls from the persisted thread.
+
+        Uses RemoveMessage so the rest of the conversation survives — abandoning
+        the whole thread would work but throws away everything the agent has
+        learned this session, which is a heavy price for one interrupted call.
+
+        Best-effort by design: if anything here fails, the turn should still be
+        attempted rather than blocked by the repair itself.
+        """
+        try:
+            from langchain_core.messages import RemoveMessage
+
+            state = graph.get_state(config)
+            messages = (state.values or {}).get("messages", []) if state else []
+            if not messages:
+                return
+
+            answered = {
+                getattr(m, "tool_call_id", None)
+                for m in messages
+                if getattr(m, "tool_call_id", None)
+            }
+
+            to_remove = []
+            for m in messages:
+                calls = getattr(m, "tool_calls", None) or []
+                if not calls:
+                    continue
+                ids = {
+                    (c.get("id") if isinstance(c, dict) else getattr(c, "id", None))
+                    for c in calls
+                }
+                # Any unanswered call invalidates the whole message — the
+                # provider rejects the pairing, not the individual call.
+                if ids - answered:
+                    mid = getattr(m, "id", None)
+                    if mid:
+                        to_remove.append(mid)
+
+            if not to_remove:
+                return
+
+            graph.update_state(config, {"messages": [RemoveMessage(id=i) for i in to_remove]})
+            print(
+                f"[Agent Runtime] Repaired thread {config['configurable']['thread_id']}: "
+                f"removed {len(to_remove)} message(s) with unanswered tool calls."
+            )
+        except Exception as e:
+            print(f"[Agent Runtime] Thread repair skipped: {e}")
+
     def _get_or_create_graph(self, model_name: str):
         """Lazy caches compiled LangGraph instances per model name."""
         if model_name in self.graphs:
             return self.graphs[model_name]
 
-        # Check for Anthropic Claude
-        if "claude" in model_name:
-            if not ModelRouter.anthropic_available():
-                print(f"[Model Runtime] ⚠️ ANTHROPIC_API_KEY not found. Falling back to {settings.DEFAULT_AGENT_MODEL}")
-                llm = ChatOpenAI(
-                    model=settings.DEFAULT_AGENT_MODEL,
-                    api_key=settings.OPENAI_API_KEY,
-                    temperature=0.1,
-                )
-            else:
-                try:
-                    from langchain_anthropic import ChatAnthropic
-                    print(f"[Model Runtime] 🏆 Initializing native Anthropic Claude ({model_name})")
-                    llm = ChatAnthropic(
-                        model_name=model_name,
-                        api_key=settings.ANTHROPIC_API_KEY,
-                        temperature=0.1,
-                    )
-                except ImportError:
-                    print("[Model Runtime] ⚠️ 'langchain-anthropic' package not installed. Falling back to OpenAI.")
-                    llm = ChatOpenAI(
-                        model=settings.DEFAULT_AGENT_MODEL,
-                        api_key=settings.OPENAI_API_KEY,
-                        temperature=0.1,
-                    )
-        else:
-            # OpenAI Models (gpt-4o, gpt-4o-mini, o3-mini)
-            print(f"[Model Runtime] ⚡ Initializing OpenAI model ({model_name})")
-            llm = ChatOpenAI(
-                model=model_name,
-                api_key=settings.OPENAI_API_KEY,
-                temperature=0.1 if "o3" not in model_name else 1.0,
-            )
+        from services.agent.llm import get_llm
+        llm = get_llm(model_name)
 
         graph = create_react_agent(
             model=llm,
@@ -141,6 +219,11 @@ class AgentRuntime:
             clean_prompt = str(prompt).strip()
 
         # 1. Initial Start Event
+        # Begin accounting for this turn. Every LLM call made from here on is
+        # counted, including the verifier's, because metering is attached in
+        # the get_llm factory.
+        metering.start_turn(session_id)
+
         start_ev = AgentStartEvent(
             workspace_id=self.gateway.workspace_id,
             session_id=session_id,
@@ -150,22 +233,33 @@ class AgentRuntime:
             await event_callback(start_ev)
         yield start_ev
 
+        # The thread identity is needed before the fast-path decision, because
+        # whether a short prompt like "continue" is conversational depends
+        # entirely on whether a conversation already exists.
+        generation = self._workspace_generation(session_id)
+        config = {"configurable": {"thread_id": f"{session_id}:{generation}"}}
+        has_history = self._thread_has_history(config)
+
         # 2. Check for Conversational Fast-Path
-        if ModelRouter.is_conversational_query(clean_prompt):
+        if ModelRouter.is_conversational_query(clean_prompt, has_history=has_history):
             status_ev = AgentStatusEvent(
                 workspace_id=self.gateway.workspace_id,
                 session_id=session_id,
                 status="Responding...",
-                phase="EXPLORE",
+                phase="DONE",
             ).model_dump()
             if event_callback:
                 await event_callback(status_ev)
             yield status_ev
 
             try:
-                llm = ChatOpenAI(
-                    model=settings.FAST_AGENT_MODEL,
-                    api_key=settings.OPENAI_API_KEY,
+                # Respect local mode here too — this fast path builds its own
+                # client and would otherwise ask Ollama for gpt-4o-mini (404)
+                # or, with a real key configured, silently bill the paid API.
+                from services.agent.llm import get_llm
+                llm = get_llm(
+                    model=settings.fast_model,
+                    purpose="fast-path",
                     temperature=0.7,
                 )
                 sys_msg = SystemMessage(
@@ -205,7 +299,30 @@ class AgentRuntime:
         resolved_model, route_reason = ModelRouter.route(clean_prompt, requested_model)
         graph = self._get_or_create_graph(resolved_model)
 
-        config = {"configurable": {"thread_id": session_id}}
+        # Conversation history is versioned by workspace generation.
+        #
+        # MemorySaver keys on thread_id, so history outlives the files it
+        # describes. Delete the project and ask for something new, and the agent
+        # still has the old file contents in context — it edits remembered files
+        # instead of creating fresh ones, and trusts stale detail over the
+        # (correct) project_context saying the workspace is empty.
+        #
+        # The rule: an empty workspace cannot have meaningful history. Nothing
+        # the agent learned about files is valid once there are no files. Bumping
+        # the generation starts a clean thread rather than mutating the old one,
+        # so the previous conversation is still inspectable for debugging.
+        # config and generation were resolved before the fast-path check above.
+
+        # Repair the CHECKPOINTED STATE, not just the model input.
+        #
+        # LangGraph validates state["messages"] inside the agent node, before the
+        # `prompt=` hook runs — so cleaning the messages in prune_messages is too
+        # late. A turn that dies between requesting a tool and recording its
+        # result leaves an AIMessage with tool_calls and no matching ToolMessage,
+        # and from then on EVERY turn on that thread fails with
+        # INVALID_CHAT_HISTORY before reaching the model at all (note the 0.0s
+        # duration on those errors). The thread is unrecoverable without this.
+        self._repair_thread_state(graph, config)
 
         # Reset turn diff buffer
         self.gateway.reset_turn_diffs()
@@ -214,24 +331,21 @@ class AgentRuntime:
         if event_callback:
             self.gateway.set_event_callback(event_callback)
 
-        # Generate Contract Checklist upfront
-        checklist_status = AgentStatusEvent(
-            workspace_id=self.gateway.workspace_id,
-            session_id=session_id,
-            status="Defining requirements checklist contract...",
-            phase="EXPLORE",
-        ).model_dump()
-        if event_callback:
-            await event_callback(checklist_status)
-        yield checklist_status
+        current_plan: List[Dict[str, Any]] = []
 
-        checklist = await IndependentVerifier.generate_checklist(clean_prompt)
+        def get_phase() -> str:
+            if not current_plan:
+                return "EXPLORE"
+            if any(step.get("status") == "in_progress" for step in current_plan):
+                return "IMPLEMENT"
+            return "PLAN"
 
+        # Emit initial status
         status_ev = AgentStatusEvent(
             workspace_id=self.gateway.workspace_id,
             session_id=session_id,
-            status=f"{route_reason} ({len(checklist)} criteria defined)...",
-            phase="EXPLORE",
+            status=f"{route_reason}...",
+            phase=get_phase(),
         ).model_dump()
         if event_callback:
             await event_callback(status_ev)
@@ -243,11 +357,19 @@ class AgentRuntime:
         messages_to_send: List[BaseMessage] = []
         if not existing_messages:
             messages_to_send.append(SystemMessage(content=SYSTEM_INSTRUCTIONS))
-        messages_to_send.append(HumanMessage(content=clean_prompt))
+
+        # Ground the agent in what the project actually is before it acts. This
+        # is a plain file read — no LLM call — and it removes the pwd/ls/cat/
+        # test -f/find thrash that otherwise opens every turn.
+        ctx_block = project_context.build(self.gateway.sandbox.workspace_dir)
+        messages_to_send.append(HumanMessage(content=f"{ctx_block}\n\n{clean_prompt}"))
 
         initial_input = {"messages": messages_to_send}
         retry_count = 0
-        max_retries = 2
+        # One corrective pass. A second rarely fixes what the first could not,
+        # and each pass costs a verify call plus however many calls the agent
+        # spends reacting to it.
+        max_retries = 1
         latest_agent_text = ""
         tool_call_args: Dict[str, Dict[str, Any]] = {}
         tool_call_count = 0
@@ -282,7 +404,17 @@ class AgentRuntime:
                                 args = call_info.get("args", {})
                                 file_path = args.get("path") or args.get("file_path") or args.get("target")
 
-                                pass
+                                if tool_name == "update_plan":
+                                    current_plan = args.get("plan", [])
+                                    if event_callback:
+                                        phase_ev = AgentStatusEvent(
+                                            workspace_id=self.gateway.workspace_id,
+                                            session_id=session_id,
+                                            status="Executing plan...",
+                                            phase=get_phase(),
+                                        ).model_dump()
+                                        await event_callback(phase_ev)
+                                        yield phase_ev
 
                     if tool_call_count >= 40:
                         msg_ev = AgentMessageEvent(
@@ -320,12 +452,36 @@ class AgentRuntime:
                     yield msg_ev
                     break
 
+                # Verification costs a full LLM call, plus up to max_retries more
+                # if it fails. That is worth paying on a multi-step build and
+                # pure overhead on a one-line edit, so gate it on the size of
+                # what actually changed.
+                plan_steps = len(current_plan or [])
+                total_lines = (diff_text or "").count("\n")
+                needs_verification = (
+                    plan_steps > 1
+                    or len(touched_files) > 1
+                    or total_lines > 30
+                )
+
+                if not needs_verification:
+                    final_content = cleaned_agent_text or "Task completed."
+                    msg_ev = AgentMessageEvent(
+                        workspace_id=self.gateway.workspace_id,
+                        session_id=session_id,
+                        content=final_content,
+                    ).model_dump()
+                    if event_callback:
+                        await event_callback(msg_ev)
+                    yield msg_ev
+                    break
+
                 # If files were modified, run Independent Verification Call
                 verify_status = AgentStatusEvent(
                     workspace_id=self.gateway.workspace_id,
                     session_id=session_id,
                     status="Auditing diff against requirements contract...",
-                    phase="EXPLORE",
+                    phase="VERIFY",
                 ).model_dump()
                 if event_callback:
                     await event_callback(verify_status)
@@ -333,9 +489,10 @@ class AgentRuntime:
 
                 report = await IndependentVerifier.verify_diff(
                     prompt=clean_prompt,
-                    checklist=checklist,
+                    plan=current_plan,
                     diff_text=diff_text,
                     touched_files=touched_files,
+                    model=resolved_model,
                 )
 
                 if report.all_passed or retry_count >= max_retries:
@@ -359,7 +516,7 @@ class AgentRuntime:
                         workspace_id=self.gateway.workspace_id,
                         session_id=session_id,
                         status=f"Refining missing requirements (Pass {retry_count}/{max_retries})...",
-                        phase="EXPLORE",
+                        phase="IMPLEMENT",
                     ).model_dump()
                     if event_callback:
                         await event_callback(retry_status)
@@ -426,3 +583,7 @@ class AgentRuntime:
             if event_callback:
                 await event_callback(err_msg)
             yield err_msg
+
+        finally:
+            # Logs e.g. "turn a1b2c3d4 · 14 calls · 182.4k in (71% cached) · $0.03"
+            metering.finish_turn()
